@@ -1,0 +1,74 @@
+{
+  "computed_at": "2026-07-16T01:52:01.070915+00:00",
+  "n_plays": 1345,
+  "n_sessions": 119,
+  "playlist_targets": {
+    "1ZiT2HZArRaUhPyAl70T9E": {
+      "content": 0.29,
+      "melodic": 0.1477,
+      "bpm": 0.3912
+    },
+    "1ujmk2fvZ1BgJI8vsYZpBy": {
+      "content": -0.2045,
+      "melodic": -0.5861,
+      "bpm": 0.082
+    },
+    "3QotZUtXE5w5aLeR3v9PmI": {
+      "content": 0.0738,
+      "melodic": -0.0633,
+      "bpm": 0.2339
+    },
+    "4E6vCr3ZZlaNRPMiIxN5ic": {
+      "content": 0.1,
+      "melodic": 0.2,
+      "bpm": 0.3
+    },
+    "4HW4oARfhmU7KbmAgytYhp": {
+      "content": -0.0332,
+      "melodic": -0.3533,
+      "bpm": 0.108
+    },
+    "4MRSdS5QFKlSW5Hsarvkl5": {
+      "content": -0.4584,
+      "melodic": -0.6423,
+      "bpm": -0.2955
+    },
+    "68qVms2ckhDRQKhfPaTuwD": {
+      "content": -0.1245,
+      "melodic": -0.5655,
+      "bpm": 0.2668
+    },
+    "6KE872dtUapeIYeyLfxjaX": {
+      "content": 0.1039,
+      "melodic": -0.05,
+      "bpm": 0.2658
+    },
+    "70kM89rH7eQs70t1TMk752": {
+      "content": 0.5347,
+      "melodic": 0.3779,
+      "bpm": 0.5518
+    },
+    "7GXjwh3E09zN8wzXBhDr2v": {
+      "content": -0.0106,
+      "melodic": -0.4395,
+      "bpm": 0.5004
+    }
+  },
+  "vibe_sigmas": {
+    "morning": {
+      "content": 0.3081,
+      "melodic": 0.3138,
+      "bpm": 0.2841
+    },
+    "afternoon": {
+      "content": 0.3121,
+      "melodic": 0.297,
+      "bpm": 0.277
+    },
+    "late_night": {
+      "content": 0.306,
+      "melodic": 0.2918,
+      "bpm": 0.2984
+    }
+  }
+}

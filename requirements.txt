@@ -1,0 +1,10 @@
+anthropic==0.111.0
+matplotlib==3.10.6
+numpy==1.26.4
+openai==2.29.0
+pandas==2.2.2
+python-dotenv==1.0.1
+scikit-learn==1.5.0
+scipy==1.15.3
+spotipy==2.26.0
+streamlit==1.58.0

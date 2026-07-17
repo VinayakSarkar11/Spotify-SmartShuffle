@@ -1,0 +1,439 @@
+{
+  "context_targets": {
+    "late_night": 0.2034,
+    "morning": 0.2375,
+    "afternoon": 0.2474
+  },
+  "behavioral_context_targets": {
+    "morning": 0.2417,
+    "afternoon": 0.1775,
+    "late_night": -0.0886
+  },
+  "playlist_context_targets": {
+    "1ZiT2HZArRaUhPyAl70T9E": {
+      "afternoon": 0.2936,
+      "late_night": 0.2864,
+      "morning": 0.3034
+    },
+    "1ujmk2fvZ1BgJI8vsYZpBy": {
+      "afternoon": 0.1478,
+      "late_night": 0.1796,
+      "morning": 0.177
+    },
+    "3QotZUtXE5w5aLeR3v9PmI": {
+      "afternoon": 0.2466,
+      "late_night": 0.2481,
+      "morning": 0.2675
+    },
+    "4HW4oARfhmU7KbmAgytYhp": {
+      "afternoon": 0.2369,
+      "late_night": 0.1704
+    },
+    "4MRSdS5QFKlSW5Hsarvkl5": {
+      "afternoon": 0.1746,
+      "late_night": 0.1599,
+      "morning": 0.2005
+    },
+    "7GXjwh3E09zN8wzXBhDr2v": {
+      "afternoon": 0.4982
+    }
+  },
+  "playlist_vibe_targets": {
+    "1F1Q2YMRSdwAMaXaIP2bxb": {
+      "content": -0.2525,
+      "melodic": -0.6267,
+      "bpm": 0.2008
+    },
+    "1ZiT2HZArRaUhPyAl70T9E": {
+      "content": 0.3453,
+      "melodic": 0.189,
+      "bpm": 0.4368
+    },
+    "1ujmk2fvZ1BgJI8vsYZpBy": {
+      "content": -0.2156,
+      "melodic": -0.5984,
+      "bpm": 0.045
+    },
+    "22FEDD8K6EaPUgDUQI9qMk": {
+      "content": 0.032,
+      "melodic": 0.1027,
+      "bpm": 0.2544
+    },
+    "3QotZUtXE5w5aLeR3v9PmI": {
+      "content": 0.0261,
+      "melodic": -0.0759,
+      "bpm": 0.1968
+    },
+    "4HW4oARfhmU7KbmAgytYhp": {
+      "content": -0.041,
+      "melodic": -0.3797,
+      "bpm": 0.0628
+    },
+    "4MRSdS5QFKlSW5Hsarvkl5": {
+      "content": -0.4425,
+      "melodic": -0.6288,
+      "bpm": -0.2502
+    },
+    "68qVms2ckhDRQKhfPaTuwD": {
+      "content": -0.1644,
+      "melodic": -0.5632,
+      "bpm": 0.1994
+    },
+    "6KE872dtUapeIYeyLfxjaX": {
+      "content": 0.1015,
+      "melodic": -0.0009,
+      "bpm": 0.2679
+    },
+    "70kM89rH7eQs70t1TMk752": {
+      "content": 0.4902,
+      "melodic": 0.4189,
+      "bpm": 0.5287
+    },
+    "7AnoKCPONV3WBQK2L1Lsr6": {
+      "content": -0.7621,
+      "melodic": -0.9,
+      "bpm": -0.6618
+    },
+    "7GXjwh3E09zN8wzXBhDr2v": {
+      "content": -0.0223,
+      "melodic": -0.4613,
+      "bpm": 0.4829
+    }
+  },
+  "weights": {
+    "energy_match": 0.2673,
+    "fatigue": 0.1671,
+    "artist_fatigue": 0.0337,
+    "coverage": 0.1337,
+    "skip": 0.3982
+  },
+  "weights_learned": {
+    "energy_match": 0.2105,
+    "fatigue": 0.1316,
+    "coverage": 0.1053,
+    "artist_fatigue": 0.0053,
+    "skip": 0.5474
+  },
+  "weights_default": {
+    "energy_match": 0.4,
+    "fatigue": 0.25,
+    "artist_fatigue": 0.1,
+    "coverage": 0.2,
+    "skip": 0.05
+  },
+  "alpha": 0.3,
+  "n_plays": 1812,
+  "binge_params": {},
+  "binge_shape": [
+    0.7963,
+    0.2222,
+    0.1296,
+    0.1111,
+    0.1111,
+    0.0556,
+    0.0556,
+    0.0556,
+    0.0833,
+    0.0556,
+    0.0833,
+    0.213,
+    0.0,
+    0.0278
+  ],
+  "learned_energy_weights": {
+    "-1001740215468": -0.294,
+    "-774278158": 0.694,
+    "10s": 0.087,
+    "2010": 0.529,
+    "2010s": 0.198,
+    "2011": -0.143,
+    "2012": 0.23,
+    "2013": -0.211,
+    "2014": -0.119,
+    "2015": 0.416,
+    "2016": 0.137,
+    "2017": 0.395,
+    "2019": 0.186,
+    "2020": 0.267,
+    "2020s": -0.041,
+    "2021": 0.107,
+    "2022": 0.362,
+    "2023": 0.624,
+    "2024": 0.529,
+    "21 savage": -0.091,
+    "60s": -0.212,
+    "70s": -0.012,
+    "acoustic": 0.226,
+    "afrobeat": -0.022,
+    "afrobeats": 0.287,
+    "alt-pop": -0.509,
+    "alternative": 0.274,
+    "alternative dance": 0.508,
+    "alternative rnb": 0.302,
+    "alternative rock": 0.223,
+    "amapiano": -0.068,
+    "ambient": 0.282,
+    "ambient pop": -0.156,
+    "american": -0.071,
+    "art pop": -0.493,
+    "as long as you love me": -0.144,
+    "asap rocky": 0.106,
+    "atlanta": 0.111,
+    "ballad": -0.049,
+    "best i ever had": 0.422,
+    "blues": 0.246,
+    "boom bap": -0.883,
+    "british": -0.026,
+    "bruno mars": 0.343,
+    "bubblegum pop": 0.126,
+    "c artist": 0.654,
+    "canadian": 0.07,
+    "catchy": 0.679,
+    "chicago": 0.323,
+    "chillout": 0.656,
+    "chillwave": -0.156,
+    "christian hip hop": 0.182,
+    "classic rock": -0.115,
+    "cloud rap": 0.288,
+    "cloud rnb": 0.694,
+    "conscious hip hop": -0.714,
+    "contemporary rnb": 0.396,
+    "country": 0.458,
+    "cover": 0.246,
+    "cute": 0.544,
+    "dance": 0.376,
+    "dance pop": -0.039,
+    "dance-pop": 0.344,
+    "dancehall": 0.394,
+    "deep house": -0.522,
+    "dirty south": -0.015,
+    "djs": 0.637,
+    "don toliver": 0.255,
+    "dope shit": -0.835,
+    "drake": 0.064,
+    "dream pop": 0.322,
+    "dreamville": 0.026,
+    "drill": -0.342,
+    "east coast hip hop": -0.81,
+    "ed sheeran": -0.477,
+    "edm": 0.668,
+    "electronic": 0.545,
+    "electropop": 0.584,
+    "eminem": -0.553,
+    "emo rap": -0.14,
+    "experimental": -0.009,
+    "experimental hip hop": -0.147,
+    "fav": 0.694,
+    "female vocalist": 0.277,
+    "female vocalists": 0.355,
+    "fetty wap": -0.604,
+    "folk": 0.443,
+    "french": -0.456,
+    "funk": 0.611,
+    "future": 0.116,
+    "future bass": 0.603,
+    "gangsta rap": 0.094,
+    "glitch hop": -0.074,
+    "grime": -0.33,
+    "gunna": 0.506,
+    "halsey": 0.648,
+    "hard trap": 0.694,
+    "hardcore hip hop": 0.079,
+    "hatsune miku": 0.509,
+    "highschool": -0.125,
+    "hip hop": -0.237,
+    "hip-hop": -0.189,
+    "horrorcore": -0.574,
+    "house": 0.619,
+    "hype": -0.374,
+    "iil baby": 0.312,
+    "importado_do_spotify": -0.173,
+    "indie": 0.26,
+    "indie pop": 0.343,
+    "j cole": -0.517,
+    "japanese": 0.465,
+    "jason derulo": 0.543,
+    "jazz rap": -0.852,
+    "justin bieber": 0.373,
+    "kanye west": -0.038,
+    "khalid": 0.663,
+    "kyla": 0.444,
+    "lana del rey -ish": 0.588,
+    "lil baby": 0.295,
+    "lil baby carried": 0.194,
+    "lil tecca": 0.381,
+    "lil uzi vert": 0.382,
+    "london": -0.009,
+    "love at first listen": 0.361,
+    "makes me crave love": 0.526,
+    "male vocalists": 0.417,
+    "maroon 5": 0.497,
+    "massachusetts": -0.809,
+    "max martin": 0.588,
+    "melodic": 0.181,
+    "melodic rap": -0.39,
+    "metro boomin": 0.109,
+    "metrooo": -0.443,
+    "miami": 0.637,
+    "miguel": -0.139,
+    "my top songs": 0.681,
+    "neo-psychedelia": -0.251,
+    "neo-soul": -0.221,
+    "new jazz": 0.694,
+    "new york": 0.667,
+    "north carolina": -0.698,
+    "partynextdoor": 0.272,
+    "peter": 0.006,
+    "piano": 0.293,
+    "plugg": -0.056,
+    "pop": 0.237,
+    "pop rap": 0.191,
+    "pop rock": 0.267,
+    "post malone": 0.138,
+    "psychedelic": 0.07,
+    "r&b": 0.307,
+    "rap": -0.171,
+    "reggae": 0.525,
+    "rihanna": 0.341,
+    "rnb": 0.105,
+    "rock": -0.012,
+    "romantic": 0.142,
+    "san francisco": 0.538,
+    "sensual": 0.656,
+    "sexy": 0.487,
+    "shawn mendes": 0.315,
+    "singer-songwriter": 0.387,
+    "slow jams": 0.135,
+    "soft rock": -0.23,
+    "soul": 0.115,
+    "south africa": -0.068,
+    "southern hip hop": 0.101,
+    "southern rap": -0.015,
+    "special": -0.306,
+    "sxsw 2017": 0.4,
+    "synthpop": 0.003,
+    "synthwave": 0.139,
+    "sza": 0.125,
+    "takeoff": 0.179,
+    "taylor swift": 0.615,
+    "texas": 0.056,
+    "the beatles": -0.728,
+    "the weeknd": -0.628,
+    "trap": -0.09,
+    "trap rap": -0.172,
+    "trapsoul": 0.031,
+    "travis scott": 0.164,
+    "trey songz": -0.844,
+    "tribute": 0.551,
+    "trip hop": 0.277,
+    "tropical house": 0.647,
+    "uk": 0.143,
+    "uk drill": 0.198,
+    "uk hip-hop": -0.02,
+    "uk rap": -0.14,
+    "underground hip-hop": -0.698,
+    "urban": 0.544,
+    "usa": 0.232,
+    "vocaloid": 0.509,
+    "wizkid": 0.444,
+    "wsum 91.7 fm madison": -0.316,
+    "young thug": 0.148
+  },
+  "regression_tag_weights": {
+    "2010s": -0.008,
+    "2017": 0.03,
+    "alternative rnb": -0.041,
+    "atlanta": -0.045,
+    "british": -0.083,
+    "bruno mars": -0.006,
+    "cloud rap": 0.015,
+    "contemporary rnb": -0.046,
+    "dancehall": 0.128,
+    "don toliver": -0.015,
+    "drake": -0.003,
+    "drill": 0.11,
+    "electronic": -0.285,
+    "future": 0.036,
+    "hip hop": 0.024,
+    "hip-hop": 0.038,
+    "j cole": -0.025,
+    "male vocalists": -0.033,
+    "melodic rap": -0.032,
+    "metro boomin": 0.006,
+    "north carolina": 0.005,
+    "pop": 0.027,
+    "pop rap": 0.022,
+    "pop rock": 0.026,
+    "r&b": -0.023,
+    "rap": 0.021,
+    "rnb": -0.039,
+    "southern hip hop": -0.062,
+    "texas": 0.018,
+    "trap": -0.029,
+    "travis scott": -0.003,
+    "underground hip-hop": 0.005
+  },
+  "loss": {
+    "smartshuffle": {
+      "total": 0.319,
+      "weekly": [
+        {
+          "week": "2026-06-08",
+          "loss": 0.3406,
+          "n": 175
+        },
+        {
+          "week": "2026-06-22",
+          "loss": 0.3044,
+          "n": 137
+        },
+        {
+          "week": "2026-06-29",
+          "loss": 0.2187,
+          "n": 91
+        },
+        {
+          "week": "2026-07-06",
+          "loss": 0.4554,
+          "n": 74
+        },
+        {
+          "week": "2026-07-13",
+          "loss": 0.2921,
+          "n": 101
+        }
+      ]
+    },
+    "baseline": {
+      "total": 0.3036,
+      "weekly": [
+        {
+          "week": "2026-06-15",
+          "loss": 0.1687,
+          "n": 32
+        },
+        {
+          "week": "2026-06-22",
+          "loss": 0.3288,
+          "n": 139
+        },
+        {
+          "week": "2026-06-29",
+          "loss": 0.4286,
+          "n": 35
+        },
+        {
+          "week": "2026-07-06",
+          "loss": 0.2824,
+          "n": 108
+        },
+        {
+          "week": "2026-07-13",
+          "loss": 0.2868,
+          "n": 76
+        }
+      ]
+    }
+  },
+  "trained_at": "2026-07-16T19:51:14.229368+00:00"
+}

@@ -1,0 +1,26 @@
+# Credentials and secrets
+.env
+.cache
+.spotify_cache
+
+# Database (personal listening data)
+data/smartshuffle.db
+data/watcher.pid
+data/rolling_queue_state.json
+data/session_state.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Logs
+logs/*.log
+
+# IDE
+.vscode/
+.idea/
