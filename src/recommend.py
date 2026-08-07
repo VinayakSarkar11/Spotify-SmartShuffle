@@ -327,11 +327,15 @@ def _apply_velocity_reasoning(
 
     Cases (only when skip_delta_clear is True):
       Case 1 (dot <= threshold): skip is behind or perpendicular to drift.
-              Keep target, return velocity_unit for asymmetric epsilon.
+              Keep target, return full velocity vector for trajectory queue + asymmetric epsilon.
       Case 2 (dot > threshold): skip is in the drift direction — we overshot.
-              Park at recent_comp_vibe, return None velocity (symmetric epsilon).
+              Park at recent_comp_vibe, return None (symmetric epsilon, no trajectory).
 
-    When no meaningful velocity (< _VELOCITY_MIN_MAG), returns (target_vibe, None).
+    When no meaningful velocity (< _VELOCITY_MIN_MAG) or velocity frozen by flush count,
+    returns (target_vibe, None).
+
+    Returns (final_target, velocity_vector) where velocity_vector is the full (non-unit)
+    inter-refill displacement — used by generate_queue for per-slot trajectory targets.
     """
     _AXES = ("content", "melodic", "bpm")
     try:
@@ -342,6 +346,16 @@ def _apply_velocity_reasoning(
 
     if state.get("time_bucket") != time_bucket:
         return target_vibe, None
+
+    # Velocity freeze: watcher sets this after _FLUSH_MAX flushes in one session.
+    vel_frozen = state.get("velocity_zeroed_until")
+    if vel_frozen:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            if _dt.fromisoformat(vel_frozen) > _dt.now(_tz.utc):
+                return target_vibe, None
+        except (ValueError, TypeError):
+            pass
 
     try:
         with open(REFILL_BASELINE_PATH) as f:
@@ -366,11 +380,11 @@ def _apply_velocity_reasoning(
 
     skip_delta_clear = bool(state.get("skip_delta_clear", False))
     if not skip_delta_clear:
-        return target_vibe, vel_unit
+        return target_vibe, velocity
 
     skip_vibe = {ax: state.get(f"skip_cluster_vibe_{ax}") for ax in _AXES}
     if any(skip_vibe[ax] is None for ax in _AXES):
-        return target_vibe, vel_unit
+        return target_vibe, velocity
 
     # dot > 0: skip is ahead in the drift direction → Case 2 (overshoot)
     dot = sum((float(skip_vibe[ax]) - target_vibe[ax]) * vel_unit[ax] for ax in _AXES)
@@ -386,16 +400,16 @@ def _apply_velocity_reasoning(
                 f"  bpm {target_vibe['bpm']:+.3f}→{parked['bpm']:+.3f}",
                 flush=True,
             )
-            return parked, None  # zero velocity — symmetric epsilon
+            return parked, None  # zero velocity — symmetric epsilon, no trajectory
     else:
         print(
             f"  Velocity: Case 1 (dot={dot:+.2f}, skip behind drift) → keep course"
-            f"  vel_mag={vel_mag:.3f}  c={vel_unit['content']:+.2f}"
-            f" m={vel_unit['melodic']:+.2f} bpm={vel_unit['bpm']:+.2f}",
+            f"  vel_mag={vel_mag:.3f}  c={velocity['content']:+.3f}"
+            f" m={velocity['melodic']:+.3f} bpm={velocity['bpm']:+.3f}",
             flush=True,
         )
 
-    return target_vibe, vel_unit
+    return target_vibe, velocity
 
 
 # ── Within-queue session continuity ──────────────────────────────────────────
@@ -1127,12 +1141,12 @@ def generate_queue(df: pd.DataFrame, context: str,
         # Cross-refill session vibe drift: blend learned target with the mean vibe
         # of completed songs so far this session (written by watcher.py).
         target_vibe = _apply_session_vibe_drift(target_vibe, time_bucket)
-        velocity_unit = None
+        velocity_vector = None
         if target_vibe:
-            target_vibe, velocity_unit = _apply_velocity_reasoning(target_vibe, time_bucket)
+            target_vibe, velocity_vector = _apply_velocity_reasoning(target_vibe, time_bucket)
             _write_refill_baseline(target_vibe, time_bucket)
     else:
-        velocity_unit = None
+        velocity_vector = None
         print("  Vibe targets: none yet (run train.py after scoring songs with score_vibes.py)")
 
     # Vectorised hours-since-last-play for the short-term recency penalty.
@@ -1257,12 +1271,29 @@ def generate_queue(df: pd.DataFrame, context: str,
     recent_vibes:  deque = deque(maxlen=4)  # last 4 picks for within-queue vibe drift
     last_pick_vibe: dict | None = None      # vibe of immediately preceding pick
 
+    # Trajectory: when velocity_vector is set, each queue slot has a progressively
+    # shifted vibe target — x = x0 + pos * step — so the queue moves toward the
+    # session drift destination rather than clustering around a fixed point.
+    # step = velocity / (n-1) so the last slot lands exactly one full velocity ahead.
+    _AXES = ("content", "melodic", "bpm")
+    if velocity_vector is not None and n > 1:
+        velocity_step = {ax: velocity_vector[ax] / (n - 1) for ax in _AXES}
+        # unit vector for asymmetric epsilon direction
+        _vel_mag_q = sum(v ** 2 for v in velocity_vector.values()) ** 0.5
+        velocity_unit = {ax: velocity_vector[ax] / _vel_mag_q for ax in _AXES} if _vel_mag_q > 0 else None
+    else:
+        velocity_step = None
+        velocity_unit = None
+
     for pos in range(n):
-        # Session continuity: drift the vibe target toward what's been playing.
-        # Creates a road (each pick flows from the last) rather than oscillating
-        # around a fixed playlist target.  Only activates when a vibe target exists
-        # and enough picks have been made; otherwise uses the playlist target as-is.
-        if (target_vibe is not None
+        # Trajectory replaces within-queue drift when velocity is active.
+        # Without velocity, drift the vibe target toward recent picks for smoothness.
+        if target_vibe is not None and velocity_step is not None:
+            effective_vibe = {
+                ax: round(target_vibe[ax] + pos * velocity_step[ax], 4)
+                for ax in _AXES
+            }
+        elif (target_vibe is not None
                 and len(recent_vibes) >= _SESSION_DRIFT_MIN_PICKS):
             effective_vibe = {
                 ax: round(
@@ -1270,7 +1301,7 @@ def generate_queue(df: pd.DataFrame, context: str,
                     + _SESSION_DRIFT_WEIGHT * float(np.mean([v[ax] for v in recent_vibes])),
                     4,
                 )
-                for ax in ("content", "melodic", "bpm")
+                for ax in _AXES
             }
         else:
             effective_vibe = target_vibe

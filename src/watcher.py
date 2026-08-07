@@ -185,8 +185,12 @@ _RECENT_MANUAL_MAX      = 0.85 # recent window: can nearly take over if manual p
 _SKIP_REPULSION_W       = 0.40 # how hard recent skips push the recent vibe away from skipped vibes
 _SKIP_SIGNAL_WINDOW     = 4    # play window for vibe-level skip detection
 _SKIP_SIGNAL_THRESHOLD  = 2    # min skips in window to trigger signal
-_SKIP_VIBE_DELTA_MIN    = 0.30 # min euclidean dist between skip/completion vibes to count as real signal
-_RECENT_COMPLETIONS_N   = 2    # completions used as the Case 2 parking target
+_SKIP_SIGNAL_MIN_COMPS  = 5    # min total completions required — prevents early-session false positives
+_SKIP_VIBE_DELTA_MIN    = 0.30 # min euclidean dist between skip cluster and last-5-comp vibes
+_RECENT_COMPLETIONS_N   = 5    # completions used for signal baseline and Case 2 parking target
+_FLUSH_MAX              = 2    # max vibe-shift queue flushes per session before velocity is frozen
+_FLUSH_COOLDOWN         = 30   # seconds between flush-triggered refills (shorter than MIN_REFILL_INTERVAL)
+_VELOCITY_FREEZE_MINUTES = 20  # minutes velocity stays zeroed after hitting _FLUSH_MAX
 
 
 def _get_session_queued_ids(rolling: dict) -> set[str]:
@@ -257,25 +261,26 @@ def _compute_skip_signal(
         return {ax: sum(v[i] for v in vs) / len(vs)
                 for i, ax in enumerate(_AXES)}
 
-    window   = plays[-_SKIP_SIGNAL_WINDOW:]
-    w_skip   = [p for p in window if p["skip_status"] == "skip"]
-    w_comp   = [p for p in window if p["skip_status"] in ("full", "partial")]
+    window = plays[-_SKIP_SIGNAL_WINDOW:]
+    w_skip = [p for p in window if p["skip_status"] == "skip"]
 
+    # Baseline: last _RECENT_COMPLETIONS_N completions across the whole session.
+    # Using the full-session window (not just the 4-play window) prevents any one
+    # outlier song from dominating the distance check.
     all_comp = [p for p in plays if p["skip_status"] in ("full", "partial")]
     recent_comp_vibe = _mean_v(all_comp[-_RECENT_COMPLETIONS_N:]) if all_comp else None
 
-    if len(w_skip) < _SKIP_SIGNAL_THRESHOLD:
+    # Require minimum completions so we have a credible baseline before signalling.
+    if len(w_skip) < _SKIP_SIGNAL_THRESHOLD or len(all_comp) < _SKIP_SIGNAL_MIN_COMPS:
         return None, recent_comp_vibe, False
 
     skip_vibe = _mean_v(w_skip)
-    comp_vibe = _mean_v(w_comp)
-
     if skip_vibe is None:
         return None, recent_comp_vibe, False
 
     delta_clear = False
-    if comp_vibe is not None:
-        dist = sum((skip_vibe[ax] - comp_vibe[ax]) ** 2 for ax in _AXES) ** 0.5
+    if recent_comp_vibe is not None:
+        dist = sum((skip_vibe[ax] - recent_comp_vibe[ax]) ** 2 for ax in _AXES) ** 0.5
         delta_clear = dist >= _SKIP_VIBE_DELTA_MIN
 
     return skip_vibe, recent_comp_vibe, delta_clear
@@ -394,6 +399,7 @@ def _write_state(
     plays_seen: int,
     session_vibe: tuple = (None, 0, None, 0, None),
     skip_signal: tuple = (None, None, False),
+    velocity_zeroed_until: str | None = None,
 ):
     vibe_data, vibe_n, recent_vibe, n_manual, manual_vibe_raw = session_vibe
     skip_cluster_vibe, recent_comp_vibe, delta_clear = skip_signal
@@ -421,6 +427,7 @@ def _write_state(
         "recent_comp_vibe_melodic":  recent_comp_vibe["melodic"]  if recent_comp_vibe else None,
         "recent_comp_vibe_bpm":      recent_comp_vibe["bpm"]      if recent_comp_vibe else None,
         "skip_delta_clear":          delta_clear,
+        "velocity_zeroed_until":     velocity_zeroed_until,
         "updated_at":                datetime.now(timezone.utc).isoformat(),
     }
     tmp = SESSION_STATE_PATH + ".tmp"
@@ -504,35 +511,158 @@ def _playlist_position_info(sp, playlist_id: str) -> tuple[int | None, list[str]
         return None, []
 
 
+def _should_flush(
+    session_state: dict,
+    upcoming_ids: list[str],
+    vibe_map: dict,
+    rolling: dict,
+) -> bool:
+    """
+    Returns True when a vibe-shift queue flush is warranted.
+
+    All gates must pass:
+    1. skip_delta_clear is True in session state (real vibe mismatch, ≥5 completions)
+    2. Signal is new — session state was updated after the last flush action
+    3. flush_count < _FLUSH_MAX (stop flushing when we're thrashing)
+    4. velocity not currently frozen
+    5. upcoming songs (positions 1+, keeping pos 0 as buffer) have mean vibe
+       distance > _SKIP_VIBE_DELTA_MIN from the last-5-comp baseline AND
+       that distance is in the same direction as the skip cluster
+    """
+    if not session_state.get("skip_delta_clear", False):
+        return False
+
+    # Gate 2: new signal since last flush
+    last_flush_signal = rolling.get("last_flush_signal_at")
+    updated_at = session_state.get("updated_at", "")
+    if last_flush_signal and updated_at <= last_flush_signal:
+        return False
+
+    # Gate 3: flush count
+    if rolling.get("flush_count", 0) >= _FLUSH_MAX:
+        return False
+
+    # Gate 4: velocity not frozen
+    vel_frozen = rolling.get("velocity_zeroed_until")
+    if vel_frozen:
+        try:
+            if datetime.fromisoformat(vel_frozen) > datetime.now(timezone.utc):
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    # Need at least one song beyond the buffer to evaluate (upcoming[1:])
+    flush_candidates = upcoming_ids[1:]
+    if not flush_candidates:
+        return False
+
+    # Load vibes for upcoming songs (may not be in the session vibe_map)
+    upcoming_vibe_map = _load_vibe_map(flush_candidates)
+    if not upcoming_vibe_map:
+        return False
+
+    _AXES = ("content", "melodic", "bpm")
+
+    def _mean_v(ids):
+        vs = [upcoming_vibe_map[sid] for sid in ids if sid in upcoming_vibe_map]
+        if not vs:
+            return None
+        return {ax: sum(v[i] for v in vs) / len(vs) for i, ax in enumerate(_AXES)}
+
+    upcoming_vibe = _mean_v(flush_candidates)
+    if upcoming_vibe is None:
+        return False
+
+    # Baseline: last-5-comp mean from session state (same as skip signal baseline)
+    comp_vibe = {ax: session_state.get(f"recent_comp_vibe_{ax}") for ax in _AXES}
+    skip_vibe = {ax: session_state.get(f"skip_cluster_vibe_{ax}") for ax in _AXES}
+    if any(comp_vibe[ax] is None for ax in _AXES) or any(skip_vibe[ax] is None for ax in _AXES):
+        return False
+
+    # Gate 5: upcoming mean is distance > 0.3 from comp baseline
+    upcoming_dir = {ax: upcoming_vibe[ax] - float(comp_vibe[ax]) for ax in _AXES}
+    dist = sum(v ** 2 for v in upcoming_dir.values()) ** 0.5
+    if dist < _SKIP_VIBE_DELTA_MIN:
+        return False
+
+    # Gate 5b: upcoming is in the same direction as the skip cluster from comp baseline
+    skip_dir = {ax: float(skip_vibe[ax]) - float(comp_vibe[ax]) for ax in _AXES}
+    dot = sum(upcoming_dir[ax] * skip_dir[ax] for ax in _AXES)
+    return dot > 0
+
+
 def _refill_threshold(plays_count: int) -> int:
     """Refill trigger grows with session depth — more plays = refill earlier."""
     return min(REFILL_MAX, REFILL_REMAINING + plays_count // REFILL_SCALE_EVERY)
 
 
-def _check_refill(sp, plays: list[dict], rolling: dict) -> int | None:
+def _check_refill(
+    sp, plays: list[dict], rolling: dict,
+    session_state: dict | None = None,
+    vibe_map: dict | None = None,
+) -> int | None:
     """
     Append a new 10-song batch to the SmartShuffle Queue playlist when fewer
     than _refill_threshold(plays_count) songs remain after the current track.
-    Threshold grows with session depth: deeper sessions skip more, so we refill
-    earlier to avoid running out.
-    Returns the current remaining count for the caller to use in adaptive polling,
-    or None if not playing from this playlist / rate limited.
+
+    Also handles vibe-shift flushes: when _should_flush returns True, removes
+    upcoming songs (keeping pos 0 as a buffer) and triggers an immediate refill
+    regardless of remaining count, bypassing the normal MIN_REFILL_INTERVAL guard.
+
+    Returns the current remaining count, or None if not playing / rate limited.
     """
     playlist_id = rolling.get("playlist_id")
     if not playlist_id:
         return None
 
-    # Don't double-refill within MIN_REFILL_INTERVAL seconds
-    last_refill = rolling.get("last_refill_at")
-    if last_refill:
-        since = (datetime.now(timezone.utc) - _parse_ts(last_refill)).total_seconds()
-        if since < MIN_REFILL_INTERVAL:
-            return None  # caller keeps last known remaining for interval decisions
-
     threshold = _refill_threshold(len(plays))
     remaining, upcoming_ids = _playlist_position_info(sp, playlist_id)
-    if remaining is None or remaining >= threshold:
-        return remaining
+    if remaining is None:
+        return None
+
+    # ── Vibe-shift flush ────────────────────────────────────────────────────
+    flush_triggered = False
+    if (session_state and vibe_map is not None
+            and _should_flush(session_state, upcoming_ids, vibe_map, rolling)):
+        flush_candidates = upcoming_ids[1:]  # keep pos 0 as Spotify buffer
+        if flush_candidates:
+            flush_uris = [f"spotify:track:{sid}" for sid in flush_candidates]
+            try:
+                sp.playlist_remove_all_occurrences_of_items(playlist_id, flush_uris)
+                flush_count = rolling.get("flush_count", 0) + 1
+                rolling["flush_count"]           = flush_count
+                rolling["last_flush_signal_at"]  = session_state.get("updated_at", "")
+                print(
+                    f"  [watcher] vibe-shift flush #{flush_count}: removed {len(flush_candidates)}"
+                    f" upcoming songs, triggering immediate refill", flush=True,
+                )
+                flush_triggered = True
+                remaining = 0  # force refill branch below
+
+                if flush_count >= _FLUSH_MAX:
+                    frozen_until = (
+                        datetime.now(timezone.utc)
+                        + __import__("datetime").timedelta(minutes=_VELOCITY_FREEZE_MINUTES)
+                    ).isoformat()
+                    rolling["velocity_zeroed_until"] = frozen_until
+                    print(
+                        f"  [watcher] flush_count={flush_count} ≥ {_FLUSH_MAX}:"
+                        f" velocity frozen until {frozen_until}", flush=True,
+                    )
+                _write_rolling_state(rolling)
+            except Exception as _fe:
+                print(f"  [watcher] flush failed: {_fe}", flush=True)
+
+    # ── Normal cooldown guard (skipped on flush) ────────────────────────────
+    if not flush_triggered:
+        last_refill = rolling.get("last_refill_at")
+        if last_refill:
+            since = (datetime.now(timezone.utc) - _parse_ts(last_refill)).total_seconds()
+            if since < MIN_REFILL_INTERVAL:
+                return remaining
+
+        if remaining >= threshold:
+            return remaining
 
     print(f"  [watcher] rolling refill triggered — {remaining} remaining"
           f" (threshold={threshold}, session_plays={len(plays)})", flush=True)
@@ -713,7 +843,8 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
         vibe_map   = _load_vibe_map(all_song_ids)
         session_v  = _compute_session_vibe(plays, queued_ids, vibe_map)
         skip_sig   = _compute_skip_signal(plays, vibe_map)
-        _write_state(time_bucket, eng, len(plays), session_v, skip_sig)
+        vel_frozen = rolling.get("velocity_zeroed_until")
+        _write_state(time_bucket, eng, len(plays), session_v, skip_sig, vel_frozen)
 
         if len(plays) >= MIN_PLAYS:
             vibe_data, vibe_n, recent_vibe, n_manual, _manual_vibe_raw = session_v
@@ -739,7 +870,11 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
         # Refill check before standby — ensures we don't miss the threshold
         # if the user paused and the idle timer fires while songs remain.
         if rolling.get("enabled"):
-            last_remaining = _check_refill(sp, plays, rolling)
+            last_remaining = _check_refill(
+                sp, plays, rolling,
+                session_state=read_session_state(),
+                vibe_map=vibe_map,
+            )
 
         # Enter standby after 10 min of no plays
         if plays:

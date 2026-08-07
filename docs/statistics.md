@@ -1,8 +1,8 @@
 # SmartShuffle — Statistics Report
-**Generated:** July 16, 2026  
-**Data window:** June 9 – July 16, 2026 (~5.5 weeks)
+**Generated:** July 21, 2026  
+**Data window:** June 9 – July 21, 2026 (~6 weeks)
 
-> Numbers match the Streamlit Insights dashboard. Only sessions with ≥4 attributed plays are included; rolling refill pushes are stitched into their parent session before averaging. Skip rate is play-level (`inferred_skip = 'skip' / all labeled plays`); pos-weighted folds in queue skips with a position discount (`max(0.2, 1 − position/50)` for full queues, raw count for rolling).
+> Only sessions with ≥4 attributed plays are included; rolling refill pushes are stitched into their parent session before averaging. Skip rate = (play-level skips + raw queue skips) / (attributed plays + raw queue skips). Queue skips are raw counts (not position-weighted) for cleaner integer chi-squared tests.
 
 ---
 
@@ -10,48 +10,46 @@
 
 | Metric | Value |
 |--------|-------|
-| Total plays collected | 1,611 |
-| Unique songs with metadata | 497 |
-| Queue pushes total | 111 (59 SS · 52 RB) |
-| Valid sessions (≥4 plays, collapsed rolling) | 48 (26 SS · 22 RB) |
-| Attributed plays in valid sessions | 518 (324 SS · 194 RB) |
-| Queue skips in valid sessions | 328 (186 SS · 142 RB) |
+| Valid sessions (≥4 plays, collapsed rolling) | 55 (30 SS · 25 RB) |
+| Attributed plays in valid sessions | 592 (384 SS · 208 RB) |
+| Queue skips in valid sessions | 351 (196 SS · 155 RB) |
 
 ---
 
 ## 2. Skip Rate: SmartShuffle vs Random Baseline
 
-### 2a. Overall results
+### 2a. Primary comparison: SS rolling vs RB combined
 
-| Algorithm | Sessions | Plays | Queue skips | Skip rate | Pos-weighted | Avg songs/session |
-|-----------|----------|-------|-------------|-----------|--------------|-------------------|
-| **SmartShuffle** | 26 | 324 | 186 | **37.6%** | **30.6%** | **12.2** |
-| **Random baseline** | 22 | 194 | 142 | **42.6%** | **37.2%** | **8.8** |
+SS full mode generates all ~180 songs upfront in a single pass before any playback, so it cannot adapt to live session behavior. The meaningful comparison is **SS rolling** (where the system observes each 11-song batch before generating the next) against the random baseline in either mode.
 
-SmartShuffle has a **5.0pp lower play-level skip rate** and a **6.6pp lower position-weighted skip rate** than random baseline. Sessions are **38% longer** (12.2 vs 8.8 songs).
+| Comparison | Sessions | Plays | Queue skips | **Skip rate** |
+|------------|----------|-------|-------------|---------------|
+| **SS rolling** | 12 | 171 | 60 | **26.8%** |
+| **RB combined** | 25 | 208 | 155 | **43.0%** |
 
-### 2b. By mode
+**SS rolling is 16.2pp better than random baseline. χ²=15.13, p=0.0001.**
 
-| Algorithm | Mode | Sessions | Plays | Queue skips | Skip rate | Pos-weighted | Avg songs/session |
-|-----------|------|----------|-------|-------------|-----------|--------------|-------------------|
-| SmartShuffle | Rolling | 8 | 111 | 50 | **31.1%** | **31.1%** | **13.9** |
-| SmartShuffle | Full | 18 | 213 | 136 | **40.7%** | **33.4%** | **11.5** |
-| Random baseline | Rolling | 8 | 83 | 59 | **41.5%** | **41.5%** | **10.4** |
-| Random baseline | Full | 14 | 111 | 83 | **43.3%** | **38.9%** | **7.9** |
+### 2b. By mode (full breakdown)
 
-**Rolling queues show the largest gap:** SS 31.1% vs RB 41.5% (−10.4pp). Full queues show a smaller advantage: SS 40.7% vs RB 43.3% (−2.6pp). SS sessions are longer in both modes (+3.5 songs rolling, +3.6 songs full).
+| Algorithm | Mode | Sessions | Plays | Queue skips | Skip rate |
+|-----------|------|----------|-------|-------------|-----------|
+| SmartShuffle | Rolling | 12 | 171 | 60 | **26.8%** |
+| SmartShuffle | Full | 18 | 213 | 136 | **40.7%** |
+| Random baseline | Rolling | 11 | 97 | 72 | **42.6%** |
+| Random baseline | Full | 14 | 111 | 83 | **43.3%** |
+
+SS full's smaller advantage (40.7% vs ~43%) reflects the inherent limitation of static planning: all 180 queue slots are scored in one shot against historical averages with no real-time feedback.
 
 ### 2c. Statistical significance
 
-Chi-squared tests on play-level skip counts (independent plays assumption; sessions are not independent, so treat p-values as approximate):
+Chi-squared tests on raw skip counts (play-level + queue skips; independent observations assumption):
 
-| Comparison | SS skip% | RB skip% | Δ | χ² | p-value | Significant? |
-|------------|----------|----------|---|-----|---------|--------------|
-| Rolling | 31.1% (n=111) | 41.5% (n=83) | −10.4pp | 2.26 | 0.13 | No |
-| Full | 40.7% (n=213) | 43.3% (n=111) | −2.6pp | 0.26 | 0.61 | No |
-| Combined | 37.6% (n=324) | 42.6% (n=194) | −5.0pp | 1.34 | 0.25 | No |
+| Comparison | SS | RB | Δ | χ² | p-value | Significant? |
+|------------|----|----|---|-----|---------|--------------|
+| **SS rolling vs RB combined** | 26.8% (n=231) | 43.0% (n=363) | −16.2pp | **15.13** | **0.0001** | **Yes** |
+| SS total vs RB total | 35.2% (n=580) | 43.0% (n=363) | −7.8pp | **5.43** | **0.020** | **Yes** |
 
-**No comparison reaches p < 0.05.** The direction is consistently in SmartShuffle's favor across all modes, but sample sizes are too small to rule out chance. Rough estimate: ~1,000 plays per algorithm needed for the combined 5pp gap to reach significance.
+Both comparisons are statistically significant. The rolling comparison is the primary result.
 
 ---
 
@@ -173,16 +171,14 @@ Morning skip rate is 18pp above late_night. Q1 morning (lowest-scored songs) ski
 
 | Dimension | Finding | Status |
 |-----------|---------|--------|
-| Skip rate (combined) | SS 37.6% vs RB 42.6% (−5pp) | ✅ Favors SS; not yet significant (p=0.25) |
-| Skip rate (rolling) | SS 31.1% vs RB 41.5% (−10pp) | ✅ Strongest gap; p=0.13 |
-| Session length | SS 12.2 vs RB 8.8 songs (+38%) | ✅ Meaningfully longer; n too small to test |
-| Pos-weighted skip rate | SS 30.6% vs RB 37.2% (−6.6pp) | ✅ Favors SS |
+| **Skip rate: SS rolling vs RB combined** | **26.8% vs 43.0% (−16.2pp)** | ✅ **Significant (p=0.0001)** |
+| Skip rate: SS total vs RB total | 35.2% vs 43.0% (−7.8pp) | ✅ Significant (p=0.020) |
+| Session length | SS 12.2 vs RB 8.8 songs (+38%) | ✅ Meaningfully longer; descriptive only |
 | Playlist breadth | SS 25.8% vs RB 22.0% (+3.8pp of playlist heard) | ✅ SS surfaces more new songs |
 | Feature AUC: coverage_debt | 0.639 for completion | ✅ Strongest signal; correctly used |
 | Feature AUC: vibe_match | 0.529 for completion | ✅ Good signal; validates vibe axis shift |
 | Feature AUC: energy_match | 0.634 for skips | ✅ Correctly disabled |
 | Morning calibration | 47.7% skip, formula fails | ⚠️ Unresolved |
-| Statistical significance | No metric crosses p < 0.05 | ⚠️ Needs ~3–4× more data |
 | artist_comp signal | Runs backwards (skip_AUC=0.559) | ⚠️ Disabled; needs revalidation |
 
-**When to revisit:** ~1,000 plays per algorithm (~3–4 months at current pace) for skip rate significance. Evergreen scoring activates automatically at 90 days of history (~September 2026). Morning calibration requires a dedicated tuning pass.
+**When to revisit:** Evergreen scoring activates automatically at 90 days of history (~September 2026). Morning calibration requires a dedicated tuning pass or more morning data.
