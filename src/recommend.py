@@ -68,7 +68,8 @@ import os
 _ROOT               = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH             = os.path.join(_ROOT, "data", "smartshuffle.db")
 PARAMS_PATH         = os.path.join(_ROOT, "data", "learned_params.json")
-SESSION_STATE_PATH  = os.path.join(_ROOT, "data", "session_state.json")
+SESSION_STATE_PATH      = os.path.join(_ROOT, "data", "session_state.json")
+REFILL_BASELINE_PATH    = os.path.join(_ROOT, "data", "refill_baseline.json")
 VIBE_PARAMS_PATH    = os.path.join(_ROOT, "data", "vibe_params.json")
 
 # ── Load learned params (written by model.py) ─────────────────────────────────
@@ -155,6 +156,7 @@ def get_target_vibe(playlist_id: str | None) -> dict | None:
 _DEFAULT_WEIGHTS = {
     "energy_match":   0.00,  # disabled (Option B) — redundant with 3-axis vibe_match
     "vibe_match":     0.40,  # was 0.20; absorbs the reallocated energy_match weight
+    "vibe_step":      0.20,  # continuity: penalizes large vibe jumps between consecutive picks
     "fatigue":        0.25,
     "artist_fatigue": 0.10,
     "coverage":       0.20,
@@ -165,6 +167,7 @@ _DEFAULT_WEIGHTS = {
 }
 WEIGHTS = _PARAMS.get("weights", _DEFAULT_WEIGHTS)
 WEIGHTS.setdefault("vibe_match",   _DEFAULT_WEIGHTS["vibe_match"])
+WEIGHTS.setdefault("vibe_step",    _DEFAULT_WEIGHTS["vibe_step"])
 WEIGHTS.setdefault("binge_boost",  _DEFAULT_WEIGHTS["binge_boost"])
 WEIGHTS["energy_match"] = 0.0  # Option B: always disabled regardless of trained value
 WEIGHTS["artist_comp"]  = 0.0  # disabled until more data validates signal direction
@@ -188,8 +191,16 @@ ARTIST_FATIGUE_FACTOR    = 0.10 # score multiplier applied to recently-queued ar
 BINGE_ALLOW_THRESHOLD    = 0.60 # artist_binge_score above this lifts the back-to-back block
 EVERGREEN_MAX_LIFT       = 0.60 # max fraction of fatigue penalty that evergreen score can cancel
 ARTIST_CAP_MULTIPLIER    = 2.2  # artists may take up to N× their pool-share of queue slots
-RECENTLY_QUEUED_PENALTY  = 0.50 # max score penalty for songs from the last generated queue;
-                                 # decays linearly to ~0 for songs at the tail of that queue
+# Multi-session exposure memory: rolling sessions count as one unit.
+# Exposure per session = max(0, 1 - position / DECAY) → 1.0 at front, 0 at position 70+.
+# Summed across last WINDOW sessions; tiers trigger at 1.4 (≈2 near-front) / 2.2 (≈3 near-front).
+_EXPOSURE_WINDOW        = 6    # distinct sessions to look back
+_POSITION_DECAY         = 70.0 # position at which per-session contribution reaches 0
+_SOFT_EXPOSURE          = 1.4  # total exposure for heavy penalty
+_HARD_EXPOSURE          = 2.2  # total exposure for near-suppression
+_SOFT_PENALTY_SCORE     = 0.50 # score subtracted at soft threshold
+_HARD_PENALTY_SCORE     = 2.00 # score subtracted at hard threshold (effective suppression)
+_EXPOSURE_COOLDOWN      = 2    # sessions since last appearance to drop hard → soft
 SCORE_TEMPERATURE        = 0.20 # softmax sampling temperature; controls how strictly the
                                  # score ordering is enforced vs. randomness among candidates.
                                  # Lower → more deterministic, higher → more shuffled.
@@ -203,6 +214,16 @@ SCORE_TEMPERATURE        = 0.20 # softmax sampling temperature; controls how str
 _SIGMA_TIGHTEN_ABOVE  = 0.30   # start tightening above this skip rate
 _SIGMA_TIGHT_AT       = 0.80   # fully tight at or above this skip rate
 _SIGMA_MIN_MULTIPLIER = 0.50   # at max skip, sigma = 50% of data baseline
+_DELTA_SIGMA_MULT     = 0.50   # step delta per axis = this fraction of vibe_sigma
+_EPSILON_HARD_CUTOFF  = 2.00   # max distance from target in sigmas per axis (hard wall)
+_EPSILON_TIGHT        = 1.50   # epsilon on skip side / against-drift direction
+_EPSILON_LOOSE        = 2.50   # epsilon in drift direction
+_VELOCITY_MIN_MAG     = 0.05   # ignore velocities smaller than this
+_VEL_DOT_THRESHOLD    = 0.05   # dot-product threshold for Case 2 (overshoot) detection
+_VIBE_MATCH_MIN       = 0.75   # combined (gc+gm+gb)/3 must reach this — blocks songs mediocre on all axes
+# Asymmetric melodic sigma: vibe_melodic < 0 = melodic; moving above target (less melodic) is harsher.
+# (mult_below_target = loose, mult_above_target = tight)
+_MELODIC_ASYM         = (1.4, 0.6)
 
 def _sigma_multiplier(recent_skip_rate: float) -> float:
     """1.0 at low skip rate → _SIGMA_MIN_MULTIPLIER at high skip rate."""
@@ -229,18 +250,22 @@ def _read_session_skip_rate(time_bucket: str) -> float:
     return 0.0
 
 # ── Cross-refill session vibe drift ──────────────────────────────────────────
-# When the watcher generates a rolling refill, it reads session_vibe_*_mean from
-# session_state.json (mean vibe of completed songs so far) and blends it with the
-# learned playlist target.  More completions = more weight on session evidence.
-# This lets long sessions drift toward the actual vibe the user is settling into.
-_SESSION_VIBE_MAX_DRIFT = 0.40  # max fraction session can shift the target
-_SESSION_VIBE_CREDIBLE  = 10    # completions at which drift reaches the maximum
+# Dead zone below MIN_CREDIBLE completions (noise filter). After that, linear
+# ramp: (n - MIN_CREDIBLE) / RAMP_OVER completions → up to MAX_DRIFT.
+# Above RECENCY_AT completions, the last RECENT_N songs carry RECENCY_W of the
+# session component so mid-session vibe shifts dominate the full-session mean.
+_SESSION_VIBE_MIN_CREDIBLE = 2    # no drift below this many completions
+_SESSION_VIBE_RAMP_OVER    = 10   # completions past threshold to reach max weight (2+10=12 → 80%)
+_SESSION_VIBE_MAX_DRIFT    = 0.80 # session can displace up to 80% of playlist target
+_SESSION_VIBE_RECENCY_AT   = 10   # above this, blend last-N into session component
+_SESSION_VIBE_RECENCY_W    = 0.85 # weight on recent-N within session component — song 1 shouldn't matter at song 30
+# (RECENT_N must match watcher.RECENT_VIBE_N = 10)
 
 def _apply_session_vibe_drift(target_vibe: dict | None, time_bucket: str) -> dict | None:
     """
-    Blends the learned playlist vibe target with the mean vibe of completed plays
-    so far this session. Only activates after 3 completions and only when a vibe
-    target exists. Returns target_vibe unchanged if no drift data is available.
+    Blends the learned playlist vibe target with session completions.
+    Dead zone < 5 completions. Linear ramp 5→45 completions (0%→80%).
+    Above 30 completions, last-10 songs carry 70% of the session signal.
     """
     if target_vibe is None:
         return target_vibe
@@ -250,19 +275,28 @@ def _apply_session_vibe_drift(target_vibe: dict | None, time_bucket: str) -> dic
         if state.get("time_bucket") != time_bucket:
             return target_vibe
         n = int(state.get("session_vibe_n", 0))
-        if n < 3:
+        if n < _SESSION_VIBE_MIN_CREDIBLE:
             return target_vibe
-        drift_w = min(n / _SESSION_VIBE_CREDIBLE, _SESSION_VIBE_MAX_DRIFT)
+        drift_w = min((n - _SESSION_VIBE_MIN_CREDIBLE) / _SESSION_VIBE_RAMP_OVER, 1.0) * _SESSION_VIBE_MAX_DRIFT
         blended = {}
         for ax in ("content", "melodic", "bpm"):
             sess_v = state.get(f"session_vibe_{ax}_mean")
             if sess_v is None:
                 return target_vibe  # incomplete state — skip drift
+            effective_sess = float(sess_v)
+            if n >= _SESSION_VIBE_RECENCY_AT:
+                recent_v = state.get(f"session_vibe_recent_{ax}")
+                if recent_v is not None:
+                    effective_sess = (
+                        _SESSION_VIBE_RECENCY_W * float(recent_v)
+                        + (1.0 - _SESSION_VIBE_RECENCY_W) * float(sess_v)
+                    )
             blended[ax] = round(
-                (1.0 - drift_w) * target_vibe[ax] + drift_w * float(sess_v), 4
+                (1.0 - drift_w) * target_vibe[ax] + drift_w * effective_sess, 4
             )
+        recency_tag = " +recency" if n >= _SESSION_VIBE_RECENCY_AT else ""
         print(
-            f"  Session vibe drift: {n} completions  w={drift_w:.2f}"
+            f"  Session vibe drift: {n} completions  w={drift_w:.2f}{recency_tag}"
             f"  c {target_vibe['content']:+.3f}→{blended['content']:+.3f}"
             f"  m {target_vibe['melodic']:+.3f}→{blended['melodic']:+.3f}"
             f"  bpm {target_vibe['bpm']:+.3f}→{blended['bpm']:+.3f}"
@@ -270,6 +304,99 @@ def _apply_session_vibe_drift(target_vibe: dict | None, time_bucket: str) -> dic
         return blended
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         return target_vibe
+
+def _write_refill_baseline(effective_vibe: dict, time_bucket: str):
+    """Snapshot the post-drift effective vibe at refill time for next-refill velocity computation."""
+    state = {
+        "effective_vibe": effective_vibe,
+        "time_bucket":    time_bucket,
+        "written_at":     __import__("datetime").datetime.now().isoformat(),
+    }
+    tmp = REFILL_BASELINE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, REFILL_BASELINE_PATH)
+
+
+def _apply_velocity_reasoning(
+    target_vibe: dict, time_bucket: str
+) -> tuple[dict, dict | None]:
+    """
+    Reads the refill baseline (written at the end of the previous refill) and the
+    current session state to compute the inter-refill velocity vector.
+
+    Cases (only when skip_delta_clear is True):
+      Case 1 (dot <= threshold): skip is behind or perpendicular to drift.
+              Keep target, return velocity_unit for asymmetric epsilon.
+      Case 2 (dot > threshold): skip is in the drift direction — we overshot.
+              Park at recent_comp_vibe, return None velocity (symmetric epsilon).
+
+    When no meaningful velocity (< _VELOCITY_MIN_MAG), returns (target_vibe, None).
+    """
+    _AXES = ("content", "melodic", "bpm")
+    try:
+        with open(SESSION_STATE_PATH) as f:
+            state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return target_vibe, None
+
+    if state.get("time_bucket") != time_bucket:
+        return target_vibe, None
+
+    try:
+        with open(REFILL_BASELINE_PATH) as f:
+            baseline_state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return target_vibe, None
+
+    if baseline_state.get("time_bucket") != time_bucket:
+        return target_vibe, None
+
+    prior_effective = baseline_state.get("effective_vibe")
+    if prior_effective is None or any(prior_effective.get(ax) is None for ax in _AXES):
+        return target_vibe, None
+
+    velocity = {ax: target_vibe[ax] - float(prior_effective[ax]) for ax in _AXES}
+    vel_mag  = sum(v ** 2 for v in velocity.values()) ** 0.5
+
+    if vel_mag < _VELOCITY_MIN_MAG:
+        return target_vibe, None
+
+    vel_unit = {ax: velocity[ax] / vel_mag for ax in _AXES}
+
+    skip_delta_clear = bool(state.get("skip_delta_clear", False))
+    if not skip_delta_clear:
+        return target_vibe, vel_unit
+
+    skip_vibe = {ax: state.get(f"skip_cluster_vibe_{ax}") for ax in _AXES}
+    if any(skip_vibe[ax] is None for ax in _AXES):
+        return target_vibe, vel_unit
+
+    # dot > 0: skip is ahead in the drift direction → Case 2 (overshoot)
+    dot = sum((float(skip_vibe[ax]) - target_vibe[ax]) * vel_unit[ax] for ax in _AXES)
+
+    if dot > _VEL_DOT_THRESHOLD:
+        recent_comp = {ax: state.get(f"recent_comp_vibe_{ax}") for ax in _AXES}
+        if all(recent_comp[ax] is not None for ax in _AXES):
+            parked = {ax: round(float(recent_comp[ax]), 4) for ax in _AXES}
+            print(
+                f"  Velocity: Case 2 (dot={dot:+.2f}, overshoot) → park at recent completions"
+                f"  c {target_vibe['content']:+.3f}→{parked['content']:+.3f}"
+                f"  m {target_vibe['melodic']:+.3f}→{parked['melodic']:+.3f}"
+                f"  bpm {target_vibe['bpm']:+.3f}→{parked['bpm']:+.3f}",
+                flush=True,
+            )
+            return parked, None  # zero velocity — symmetric epsilon
+    else:
+        print(
+            f"  Velocity: Case 1 (dot={dot:+.2f}, skip behind drift) → keep course"
+            f"  vel_mag={vel_mag:.3f}  c={vel_unit['content']:+.2f}"
+            f" m={vel_unit['melodic']:+.2f} bpm={vel_unit['bpm']:+.2f}",
+            flush=True,
+        )
+
+    return target_vibe, vel_unit
+
 
 # ── Within-queue session continuity ──────────────────────────────────────────
 # After each pick the effective energy target drifts slightly toward recent picks,
@@ -608,7 +735,8 @@ def cluster_playlist(conn, df: pd.DataFrame, k: int = None) -> tuple[pd.DataFram
 
 def _score(row: pd.Series, target_energy: float, weights: dict,
            sigma: float = 0.30, target_vibe: dict | None = None,
-           vibe_sigmas: dict | None = None) -> float:
+           vibe_sigmas: dict | None = None,
+           last_vibe: dict | None = None) -> float:
     """
     Ranking score for a single candidate song. Higher = more likely to be queued.
 
@@ -691,13 +819,38 @@ def _score(row: pd.Series, target_energy: float, weights: dict,
         vb = float(row["vibe_bpm"])
         vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
         gc = float(np.exp(-0.5 * (vc - target_vibe["content"])**2 / (vs["content"] * _binge_sigma_mult)**2))
-        gm = float(np.exp(-0.5 * (vm - target_vibe["melodic"])**2 / (vs["melodic"] * _binge_sigma_mult)**2))
+        _dm = vm - target_vibe["melodic"]
+        _sm = vs["melodic"] * (_MELODIC_ASYM[0] if _dm < 0 else _MELODIC_ASYM[1]) * _binge_sigma_mult
+        gm = float(np.exp(-0.5 * _dm**2 / _sm**2))
         gb = float(np.exp(-0.5 * (vb - target_vibe["bpm"])**2     / (vs["bpm"]     * _binge_sigma_mult)**2))
         vibe_match = (gc + gm + gb) / 3.0
+
+    # Vibe step continuity — penalizes jumping more than delta from the previous pick.
+    # delta per axis = _DELTA_SIGMA_MULT × vibe_sigma (half the epsilon ball radius).
+    # First pick in a queue has last_vibe=None → no penalty (neutral 1.0).
+    vibe_step = 1.0
+    if (last_vibe is not None
+            and row.get("vibe_content") is not None
+            and row.get("vibe_melodic") is not None
+            and row.get("vibe_bpm")     is not None):
+        vc = float(row["vibe_content"])
+        vm = float(row["vibe_melodic"])
+        vb = float(row["vibe_bpm"])
+        vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
+        ds_c = vs["content"]  * _DELTA_SIGMA_MULT
+        ds_m = vs["melodic"]  * _DELTA_SIGMA_MULT
+        ds_b = vs["bpm"]      * _DELTA_SIGMA_MULT
+        gc_s = float(np.exp(-0.5 * (vc - last_vibe["content"])**2 / ds_c**2))
+        _dm_s = vm - last_vibe["melodic"]
+        _ds_m_asym = ds_m * (_MELODIC_ASYM[0] if _dm_s < 0 else _MELODIC_ASYM[1])
+        gm_s = float(np.exp(-0.5 * _dm_s**2 / _ds_m_asym**2))
+        gb_s = float(np.exp(-0.5 * (vb - last_vibe["bpm"])**2     / ds_b**2))
+        vibe_step = (gc_s + gm_s + gb_s) / 3.0
 
     return round(
           weights["energy_match"]               * energy_match
         + weights.get("vibe_match", 0.0)        * vibe_match
+        + weights.get("vibe_step",  0.0)        * vibe_step
         - weights["fatigue"]                    * effective_fatigue
         - weights.get("artist_fatigue", 0.10)   * effective_artist_fatigue
         + weights["coverage"]                   * coverage_bonus
@@ -735,7 +888,8 @@ def _make_entry(pick: pd.Series, score: float) -> dict:
 def _compute_scores(pool: pd.DataFrame, target_energy: float, weights: dict,
                     sigma: float = 0.30,
                     target_vibe: dict | None = None,
-                    vibe_sigmas: dict | None = None) -> pd.Series:
+                    vibe_sigmas: dict | None = None,
+                    last_vibe: dict | None = None) -> pd.Series:
     """
     Vectorized base score for the full pool.
 
@@ -782,7 +936,9 @@ def _compute_scores(pool: pd.DataFrame, target_energy: float, weights: dict,
         vb = pool["vibe_bpm"].fillna(float("nan"))
         vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
         gc = np.exp(-0.5 * (vc - target_vibe["content"])**2 / vs["content"]**2)
-        gm = np.exp(-0.5 * (vm - target_vibe["melodic"])**2 / vs["melodic"]**2)
+        _dm = vm - target_vibe["melodic"]
+        _sm = vs["melodic"] * np.where(_dm < 0, _MELODIC_ASYM[0], _MELODIC_ASYM[1])
+        gm = np.exp(-0.5 * _dm**2 / _sm**2)
         gb = np.exp(-0.5 * (vb - target_vibe["bpm"])**2     / vs["bpm"]**2)
         vibe_match = ((gc + gm + gb) / 3.0).fillna(1.0)
     else:
@@ -800,9 +956,29 @@ def _compute_scores(pool: pd.DataFrame, target_energy: float, weights: dict,
     eff_comp   = 0.5 + (comp_rate - 0.5) * comp_conf
     comp_signal = (eff_comp - 0.5) * 2.0
 
+    # Vibe step continuity — same two-barrier logic as _score, vectorized.
+    step_w = weights.get("vibe_step", 0.0)
+    if last_vibe is not None and step_w > 0 and "vibe_content" in pool.columns:
+        vc_s = pool["vibe_content"].fillna(float("nan"))
+        vm_s = pool["vibe_melodic"].fillna(float("nan"))
+        vb_s = pool["vibe_bpm"].fillna(float("nan"))
+        vs   = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
+        ds_c = vs["content"]  * _DELTA_SIGMA_MULT
+        ds_m = vs["melodic"]  * _DELTA_SIGMA_MULT
+        ds_b = vs["bpm"]      * _DELTA_SIGMA_MULT
+        gc_s = np.exp(-0.5 * (vc_s - last_vibe["content"])**2 / ds_c**2)
+        _dm_s = vm_s - last_vibe["melodic"]
+        _ds_m_asym = ds_m * np.where(_dm_s < 0, _MELODIC_ASYM[0], _MELODIC_ASYM[1])
+        gm_s = np.exp(-0.5 * _dm_s**2 / _ds_m_asym**2)
+        gb_s = np.exp(-0.5 * (vb_s - last_vibe["bpm"])**2     / ds_b**2)
+        vibe_step = ((gc_s + gm_s + gb_s) / 3.0).fillna(1.0)
+    else:
+        vibe_step = pd.Series(1.0, index=pool.index)
+
     return (
           weights["energy_match"]               * energy_match
         + vibe_w                                * vibe_match
+        + step_w                                * vibe_step
         - weights["fatigue"]                    * eff_fat
         - weights.get("artist_fatigue", 0.10)   * eff_arti
         + weights["coverage"]                   * coverage
@@ -833,7 +1009,8 @@ def _pick_best(pool: pd.DataFrame, used: set, target_energy: float,
                temperature: float = SCORE_TEMPERATURE,
                sigma: float = 0.30,
                target_vibe: dict | None = None,
-               vibe_sigmas: dict | None = None):
+               vibe_sigmas: dict | None = None,
+               last_vibe: dict | None = None):
     avail = pool[~pool["song_id"].isin(used)]
     if avail.empty:
         return None, None
@@ -866,14 +1043,14 @@ def _pick_best(pool: pd.DataFrame, used: set, target_energy: float,
 
         scores = (base_scores.loc[avail.index] if base_scores is not None
                   else avail.apply(
-                      lambda r: _score(r, target_energy, weights, sigma, target_vibe, vibe_sigmas), axis=1))
+                      lambda r: _score(r, target_energy, weights, sigma, target_vibe, vibe_sigmas, last_vibe), axis=1))
         for artist, factor in artist_soft.items():
             mask = avail["artist_name"] == artist
             scores = scores.where(~mask, scores * factor)
     else:
         scores = (base_scores.loc[avail.index] if base_scores is not None
                   else avail.apply(
-                      lambda r: _score(r, target_energy, weights, sigma, target_vibe, vibe_sigmas), axis=1))
+                      lambda r: _score(r, target_energy, weights, sigma, target_vibe, vibe_sigmas, last_vibe), axis=1))
 
     best_idx = _softmax_pick(scores, temperature)
     return avail.loc[best_idx], scores[best_idx]
@@ -950,7 +1127,12 @@ def generate_queue(df: pd.DataFrame, context: str,
         # Cross-refill session vibe drift: blend learned target with the mean vibe
         # of completed songs so far this session (written by watcher.py).
         target_vibe = _apply_session_vibe_drift(target_vibe, time_bucket)
+        velocity_unit = None
+        if target_vibe:
+            target_vibe, velocity_unit = _apply_velocity_reasoning(target_vibe, time_bucket)
+            _write_refill_baseline(target_vibe, time_bucket)
     else:
+        velocity_unit = None
         print("  Vibe targets: none yet (run train.py after scoring songs with score_vibes.py)")
 
     # Vectorised hours-since-last-play for the short-term recency penalty.
@@ -1001,28 +1183,79 @@ def generate_queue(df: pd.DataFrame, context: str,
         for a, cnt in pool.groupby("artist_name")["song_id"].count().items()
     }
 
-    # Pre-compute the recently-queued penalty once — it doesn't change across picks.
-    # Songs near the front of the last queue get RECENTLY_QUEUED_PENALTY; tail songs
-    # get ~0. This rotates ordering across consecutive runs without hard-excluding anything.
+    # Multi-session exposure penalty.
+    # Rolling sessions (multiple refill pushes) count as one session unit.
+    # Each session contributes max(0, 1 - position / DECAY) per song.
+    # Summed across last WINDOW sessions; heavy penalty at SOFT_EXPOSURE, suppression at HARD_EXPOSURE.
     queued_penalty = pd.Series(0.0, index=pool.index)
     if conn is not None:
-        _row = conn.execute(
-            "SELECT songs FROM queues WHERE algorithm='smartshuffle'"
-            " ORDER BY queue_id DESC LIMIT 1"
-        ).fetchone()
-        if _row:
-            _last_queue = json.loads(_row[0])
-            _n_last     = len(_last_queue)
-            if _n_last > 0:
-                _pos_map       = {s["song_id"]: i for i, s in enumerate(_last_queue)}
-                _pos           = pool["song_id"].map(_pos_map)   # NaN = not in last queue
-                queued_penalty = (RECENTLY_QUEUED_PENALTY * (1.0 - _pos / _n_last)).fillna(0.0)
+        _push_rows = conn.execute("""
+            SELECT COALESCE(rolling_session_id, push_id) AS sess_id,
+                   queue_id, pushed_at
+            FROM queue_pushes
+            WHERE algorithm = 'smartshuffle'
+            ORDER BY pushed_at DESC
+            LIMIT ?
+        """, (_EXPOSURE_WINDOW * 8,)).fetchall()
+
+        # Group into distinct sessions (ordered newest-first); cap at EXPOSURE_WINDOW
+        _sessions_ordered = []
+        _session_queues   = {}  # sess_id -> [(queue_id, pushed_at)]
+        for sess_id, queue_id, pushed_at in _push_rows:
+            if sess_id not in _session_queues:
+                if len(_sessions_ordered) >= _EXPOSURE_WINDOW:
+                    break
+                _sessions_ordered.append(sess_id)
+                _session_queues[sess_id] = []
+            _session_queues[sess_id].append((queue_id, pushed_at))
+
+        # Per song: accumulate exposure score and track age of most recent session
+        _song_exposure = {}  # song_id -> float
+        _song_last_age = {}  # song_id -> int (0 = most recent session)
+
+        for _age, _sess_id in enumerate(_sessions_ordered):
+            _pushes = sorted(_session_queues[_sess_id], key=lambda x: x[1])
+            _cum_pos = 0
+            _seen    = set()
+            for _qid, _ in _pushes:
+                _qrow = conn.execute(
+                    "SELECT songs FROM queues WHERE queue_id = ?", (_qid,)
+                ).fetchone()
+                if not _qrow:
+                    continue
+                _push_songs = json.loads(_qrow[0])
+                for _i, _s in enumerate(_push_songs):
+                    _sid = _s["song_id"]
+                    if _sid in _seen:
+                        continue
+                    _seen.add(_sid)
+                    _contrib = max(0.0, 1.0 - (_cum_pos + _i) / _POSITION_DECAY)
+                    if _contrib > 0.0:
+                        _song_exposure[_sid] = _song_exposure.get(_sid, 0.0) + _contrib
+                        if _sid not in _song_last_age:
+                            _song_last_age[_sid] = _age
+                _cum_pos += len(_push_songs)
+
+        for _sid, _exposure in _song_exposure.items():
+            _mask = pool["song_id"] == _sid
+            if not _mask.any():
+                continue
+            _last_age = _song_last_age.get(_sid, 999)
+            if _exposure >= _HARD_EXPOSURE:
+                _penalty = _SOFT_PENALTY_SCORE if _last_age >= _EXPOSURE_COOLDOWN else _HARD_PENALTY_SCORE
+            elif _exposure >= _SOFT_EXPOSURE:
+                _penalty = _SOFT_PENALTY_SCORE
+            else:
+                _penalty = 0.0
+            if _penalty > 0.0:
+                queued_penalty = queued_penalty.where(~_mask, _penalty)
 
     used            = set()
     queue           = []
     recent_artists  = deque(maxlen=ARTIST_FATIGUE_WINDOW)
     artist_picks:   dict  = {}
-    recent_vibes: deque = deque(maxlen=4)  # last 4 picks for within-queue vibe drift
+    recent_vibes:  deque = deque(maxlen=4)  # last 4 picks for within-queue vibe drift
+    last_pick_vibe: dict | None = None      # vibe of immediately preceding pick
 
     for pos in range(n):
         # Session continuity: drift the vibe target toward what's been playing.
@@ -1044,7 +1277,7 @@ def generate_queue(df: pd.DataFrame, context: str,
 
         # Recompute scores with the current effective vibe target, adaptive σ.
         # Pool is ~200-300 rows so vectorised recompute per pick is negligible.
-        base_scores = _compute_scores(pool, target_energy, weights, sigma, effective_vibe, vibe_sigmas) - queued_penalty
+        base_scores = _compute_scores(pool, target_energy, weights, sigma, effective_vibe, vibe_sigmas, last_pick_vibe) - queued_penalty
 
         # Artists that have used up their per-queue cap, minus actively-binged ones
         capped: set = set()
@@ -1072,10 +1305,57 @@ def generate_queue(df: pd.DataFrame, context: str,
         else:
             effective_used = used
 
+        # Asymmetric epsilon wall: songs in the velocity direction get _EPSILON_LOOSE
+        # (2.5σ), songs against the drift or toward the skip cluster get _EPSILON_TIGHT
+        # (1.5σ). Falls back to _EPSILON_HARD_CUTOFF when no velocity signal.
+        if effective_vibe is not None and "vibe_content" in pool.columns:
+            _vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
+            if velocity_unit is not None:
+                # Per-axis cutoff: sign of (song - target) vs sign of velocity_unit.
+                # Matching sign → drifting that way → loose; opposing sign → tight.
+                _eps_mask = pool["vibe_content"].isna()  # no vibe → always eligible
+                _ax_checks = []
+                for _ax, _col in (("content", "vibe_content"),
+                                   ("melodic", "vibe_melodic"),
+                                   ("bpm",     "vibe_bpm")):
+                    _delta  = pool[_col].sub(effective_vibe[_ax])
+                    _vel_ax = velocity_unit[_ax]
+                    # choose per-row cutoff: LOOSE if song is in velocity direction, else TIGHT
+                    _cutoff = np.where(_delta * _vel_ax >= 0, _EPSILON_LOOSE, _EPSILON_TIGHT)
+                    _ax_checks.append(_delta.abs() <= _cutoff * _vs[_ax])
+                _in_eps = _eps_mask | (_ax_checks[0] & _ax_checks[1] & _ax_checks[2])
+            else:
+                _in_eps = (
+                    pool["vibe_content"].isna() |
+                    (
+                        (pool["vibe_content"].sub(effective_vibe["content"]).abs()
+                            <= _EPSILON_HARD_CUTOFF * _vs["content"]) &
+                        (pool["vibe_melodic"].sub(effective_vibe["melodic"]).abs()
+                            <= _EPSILON_HARD_CUTOFF * _vs["melodic"]) &
+                        (pool["vibe_bpm"].sub(effective_vibe["bpm"]).abs()
+                            <= _EPSILON_HARD_CUTOFF * _vs["bpm"])
+                    )
+                )
+            if (_in_eps & ~pool["song_id"].isin(effective_used)).any():
+                base_scores = base_scores.where(_in_eps, -np.inf)
+
+        # Combined vibe-match floor: exclude songs whose (gc+gm+gb)/3 < _VIBE_MATCH_MIN.
+        # Catches songs mediocre on all axes that each pass the per-axis epsilon wall.
+        # Released automatically if no qualifying candidates remain (same pattern as above).
+        if effective_vibe is not None and "vibe_content" in pool.columns:
+            _vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
+            _gc = np.exp(-0.5 * pool["vibe_content"].sub(effective_vibe["content"]).pow(2) / _vs["content"]**2)
+            _gm = np.exp(-0.5 * pool["vibe_melodic"].sub(effective_vibe["melodic"]).pow(2) / _vs["melodic"]**2)
+            _gb = np.exp(-0.5 * pool["vibe_bpm"].sub(effective_vibe["bpm"]).pow(2)         / _vs["bpm"]**2)
+            _combined = ((_gc + _gm + _gb) / 3.0).where(pool["vibe_content"].notna(), 1.0)
+            _in_match = _combined >= _VIBE_MATCH_MIN
+            if (_in_match & ~pool["song_id"].isin(effective_used)).any():
+                base_scores = base_scores.where(_in_match, -np.inf)
+
         pick, score = _pick_best(
             pool, effective_used, target_energy, weights, list(recent_artists),
             base_scores=base_scores, sigma=sigma, target_vibe=effective_vibe,
-            vibe_sigmas=vibe_sigmas,
+            vibe_sigmas=vibe_sigmas, last_vibe=last_pick_vibe,
         )
         if pick is None:
             break
@@ -1083,15 +1363,19 @@ def generate_queue(df: pd.DataFrame, context: str,
         used.add(pick["song_id"])
         artist_picks[pick["artist_name"]] = artist_picks.get(pick["artist_name"], 0) + 1
         recent_artists.append(pick["artist_name"])
-        # Track vibe of each pick for within-queue drift (only when vibe scores exist)
-        if (target_vibe is not None
-                and pick.get("vibe_content") is not None
+        # Track vibe of each pick for within-queue drift and step continuity
+        if (pick.get("vibe_content") is not None
                 and not np.isnan(float(pick.get("vibe_content", float("nan"))))):
-            recent_vibes.append({
+            _pick_vibe = {
                 "content": float(pick["vibe_content"]),
                 "melodic": float(pick["vibe_melodic"]),
                 "bpm":     float(pick["vibe_bpm"]),
-            })
+            }
+            last_pick_vibe = _pick_vibe
+            if target_vibe is not None:
+                recent_vibes.append(_pick_vibe)
+        else:
+            last_pick_vibe = None
 
     if target_vibe is not None and len(recent_vibes) >= _SESSION_DRIFT_MIN_PICKS:
         final_vibe = {
@@ -1304,10 +1588,6 @@ def main():
     print("\nGenerating queue (Phase 4)...")
     ss_queue = generate_queue(df, context, n=args.count, conn=conn, playlist_id=playlist_id)
     save_queue(conn, ss_queue, context, playlist_id)
-
-    baseline = generate_random_baseline(df) if not args.count else []
-    if baseline:
-        save_random_baseline(conn, baseline, context, playlist_id)
 
     print_queue(ss_queue, context, scores=args.scores)
 

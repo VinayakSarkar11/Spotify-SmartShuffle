@@ -1,6 +1,6 @@
 # SmartShuffle — Project Status
-**Date:** July 16, 2026  
-**Data:** 1,611 plays · 497 unique songs with metadata · 111+ sessions · 14 playlists · 111 queue pushes (59 SmartShuffle / 52 random baseline) · 655 attributed queued plays · 372 inferred queue skips
+**Date:** August 7, 2026  
+**Data:** 2,504 plays · 825 unique songs with vibe scores · 116 sessions · 14 playlists · 226 queue pushes (146 SmartShuffle / 80 random baseline) · 1,162 attributed queued plays · 568 inferred queue skips
 
 ---
 
@@ -168,6 +168,15 @@ Single entry point: `python run.py --playlist Hype --context late_night --play`
 | Decay-weighted engagement baselines | phase2 | 180-day morning, 90-day other buckets |
 | session_watcher.py | session_watcher | Real-time engagement_delta via polling |
 | `IS NOT NULL` → `IN (...)` fix | app | Excludes 'unknown' from skip rate denominators |
+| AppleScript playback fallback | push | Bypasses Spotify Web API device lookup when no devices found or stale device ID (404) returns; uses `osascript` to trigger Spotify desktop app directly |
+| Multi-session exposure penalty | recommend | Position-weighted exposure score across last 6 sessions (rolling_session_id-grouped); soft (1.4) and hard (2.2) suppression tiers replace flat 50% recently-queued penalty |
+| Manual play % metric | app | Weekly % of plays that were session interjections (queued-session plays not in the queue); spike signals SS is over-suppressing songs |
+| Session vibe drift acceleration | recommend, watcher | `MIN_CREDIBLE` 5→2, `RAMP_OVER` 23→10, `RECENCY_AT` 30→10, `RECENCY_W` 0.70→0.85 — drift now activates faster and recent plays dominate the signal sooner |
+| Skip repulsion in session vibe | watcher | Recent-window mean is pushed away from mean vibe of skipped songs (`_SKIP_REPULSION_W=0.40`) |
+| Manual play boost in recent window | watcher | Manual plays in last-10 window get 6× weight (capped at 85%) vs 3× global; ensures the user's steering signal dominates |
+| Velocity-based in-session drift | recommend, watcher | Inter-refill velocity vector (`effective_target − prior_baseline`) shapes asymmetric epsilon balls: 2.5σ in drift direction, 1.5σ against; Case 2 (overshoot) parks target at recent completions and zeros velocity |
+| Skip signal detection | watcher | `_compute_skip_signal`: ≥2 of last 4 plays are skips AND skip-vibe euclidean distance >0.3 from completion-vibe; writes `skip_cluster_vibe`, `recent_comp_vibe`, `skip_delta_clear` to session state |
+| Refill baseline snapshotting | recommend | Post-drift effective vibe written to `refill_baseline.json` at each refill; read at next refill to compute inter-refill velocity without accumulating baseline drift |
 
 ---
 
@@ -256,6 +265,27 @@ Target energy = +0.374. Gaussian σ=0.5: a song exactly at +0.374 scores 1.0 on 
 ---
 
 ## Changes
+
+**2026-08-07 — Velocity-based in-session drift** (`src/watcher.py`, `src/recommend.py`)
+Replaced the fixed session vibe target with a velocity vector system that interprets skip signals relative to the direction of drift and shapes epsilon balls asymmetrically. Key changes:
+- `_load_vibe_map()` extracted from `_compute_session_vibe()` and called once per poll cycle; passed to both `_compute_session_vibe` and `_compute_skip_signal`.
+- `_compute_skip_signal()`: fires when ≥2 of last 4 plays are skips AND skip-vibe euclidean distance > 0.30 from completion-vibe. Returns `(skip_cluster_vibe, recent_comp_vibe, delta_clear)`. Written to `session_state.json` as `skip_cluster_vibe_{ax}`, `recent_comp_vibe_{ax}`, `skip_delta_clear`.
+- `_compute_session_vibe()` returns 5-tuple (added `manual_vibe_raw`) and accepts `vibe_map` to avoid re-querying.
+- `_apply_velocity_reasoning()`: reads `refill_baseline.json` (previous refill's post-drift target) and `session_state.json`, computes `velocity = effective_target − prior_baseline`. Interprets skip signal: Case 1 (dot ≤ 0.05, skip behind drift) → keep target, return `velocity_unit` for epsilon shaping; Case 2 (dot > 0.05, overshoot) → park at `recent_comp_vibe`, return `None` (symmetric epsilon).
+- `_write_refill_baseline()`: snapshots post-drift target to `refill_baseline.json` after each refill so next refill's velocity reflects inter-refill delta.
+- Asymmetric epsilon in queue loop: when `velocity_unit` is set, songs in the drift direction get 2.5σ (`_EPSILON_LOOSE`), songs against it get 1.5σ (`_EPSILON_TIGHT`); falls back to symmetric 2.0σ when no velocity or Case 2 park.
+
+**2026-08-07 — Multi-session exposure penalty** (`src/recommend.py`)
+Replaced flat 50% `RECENTLY_QUEUED_PENALTY` with a position-weighted multi-session exposure system. Songs accumulate `exposure_score = sum(max(0, 1 − position/70))` across the last 6 distinct rolling sessions. Scores above 1.4 (soft) receive a 0.50 score penalty; above 2.2 (hard) receive a 2.00 penalty (near-suppression). A 2-session cooldown prevents freshly-penalized songs from immediately re-entering.
+
+**2026-08-07 — AppleScript playback fallback** (`src/push.py`)
+Multi-layer fallback for macOS Spotify device detection. When Web API returns no devices, checks `osascript` for a running Spotify desktop instance and sets `use_applescript = True`. Also catches 404 from `start_playback` (stale device ID) and falls through to AppleScript. AppleScript plays the playlist URI directly via `tell application "Spotify" to play track`.
+
+**2026-08-07 — Session vibe drift acceleration + manual play boost** (`src/recommend.py`, `src/watcher.py`)
+`MIN_CREDIBLE` 5→2, `RAMP_OVER` 23→10, `RECENCY_AT` 30→10, `RECENCY_W` 0.70→0.85. Manual plays in last-10 window weighted 6× (capped 85%) vs 3× global. Skip repulsion (`_SKIP_REPULSION_W=0.40`) pushes recent window mean away from skipped vibes.
+
+**2026-08-07 — Manual play % metric** (`app.py`)
+Added weekly manual play % to Insights tab. Numerator: plays from `session_interjections` (songs played during an active SS/RB session that weren't in the queue). Denominator: total SS + RB queued plays that week. A spike indicates SS is over-suppressing songs the user is seeking out manually. Shown as a line chart + "Last 2 weeks" metric with delta vs prior 4 weeks.
 
 **2026-07-16 — Vibe axis replaces Last.fm energy in scoring and clustering** (`src/recommend.py`, `src/watcher.py`, `src/train.py`)
 Removed Last.fm energy from all active pipeline components while preserving infrastructure. Energy scoring, `energy_score` columns, and `behavioral_energy` remain in the DB and `score.py` but are no longer used in queue generation. The vibe axis (`vibe_content`, `vibe_melodic`, `vibe_bpm`) now drives all downstream logic:

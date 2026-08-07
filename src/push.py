@@ -33,7 +33,8 @@ DB_PATH = os.path.join(DIR, "data", "smartshuffle.db")
 ROLLING_STATE_PATH = os.path.join(DIR, "data", "rolling_queue_state.json")
 WATCHER_PID_PATH   = os.path.join(DIR, "data", "watcher.pid")
 
-RANDOM_BASELINE_FRACTION = 0.40
+RANDOM_BASELINE_FRACTION = 0.0
+ALLOW_RB_ROLLING         = False   # set True to re-enable RB rolling sessions
 
 SCOPE = " ".join([
     "user-read-recently-played",
@@ -193,6 +194,10 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
     if algorithm is None:
         algorithm = _pick_algorithm()
 
+    if rolling and algorithm == "random_baseline" and not ALLOW_RB_ROLLING:
+        print("RB rolling is disabled (ALLOW_RB_ROLLING=False in push.py). Set to True to re-enable.")
+        return
+
     row = load_queue(queue_id, algorithm)
     if not row:
         print("No queue found. Run phase34.py first.")
@@ -217,6 +222,40 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
         except Exception:
             pass
 
+    if not all_devices:
+        # Last resort: use the most recently seen device from config table
+        _cfg_conn = sqlite3.connect(DB_PATH)
+        _ensure_config_table(_cfg_conn)
+        _last = _cfg_conn.execute(
+            "SELECT value FROM config WHERE key='last_device_id'"
+        ).fetchone()
+        _last_name = _cfg_conn.execute(
+            "SELECT value FROM config WHERE key='last_device_name'"
+        ).fetchone()
+        _cfg_conn.close()
+        if _last:
+            print(f"  Spotify API returned no devices; falling back to last known: "
+                  f"{_last_name[0] if _last_name else _last[0]}")
+            all_devices = [{"id": _last[0], "name": _last_name[0] if _last_name else "last known device",
+                            "is_active": False, "type": "Computer"}]
+
+    use_applescript = False
+    if not all_devices:
+        # API is completely dark — check if the desktop app is at least running
+        try:
+            import subprocess as _subprocess
+            _as = _subprocess.run(
+                ["osascript", "-e", 'tell application "Spotify" to player state as string'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if _as.returncode == 0 and _as.stdout.strip() in ("playing", "paused", "stopped"):
+                print("  Spotify API unreachable but desktop app is running; will use AppleScript for playback.")
+                use_applescript = True
+                all_devices = [{"id": "applescript", "name": "Spotify (AppleScript)",
+                                "is_active": True, "type": "Computer"}]
+        except Exception:
+            pass
+
     if device_id:
         device = next((d for d in all_devices if d["id"] == device_id), None)
         if not device:
@@ -236,6 +275,19 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
     tag = " (active)" if device["is_active"] else " (will transfer playback)"
     print(f"\nDevice: {device['name']}{tag}")
 
+    # Persist device so we can fall back to it when the Spotify API goes dark
+    if not use_applescript:
+        _save_conn = sqlite3.connect(DB_PATH)
+        _ensure_config_table(_save_conn)
+        _save_conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('last_device_id', ?)", (device["id"],)
+        )
+        _save_conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('last_device_name', ?)", (device["name"],)
+        )
+        _save_conn.commit()
+        _save_conn.close()
+
     # Get/create the persistent push playlist and populate it
     push_playlist_id = _get_or_create_push_playlist()
     push_playlist_uri = f"spotify:playlist:{push_playlist_id}"
@@ -244,37 +296,62 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
 
     # Pause first — forces Spotify to fully restart the context rather than
     # continuing from wherever it was in the same playlist.
-    try:
-        sp.pause_playback(device_id=device["id"])
-        time.sleep(0.5)
-    except spotipy.exceptions.SpotifyException:
-        pass  # already paused or not playing — fine
+    if not use_applescript:
+        try:
+            sp.pause_playback(device_id=device["id"])
+            time.sleep(0.5)
+        except spotipy.exceptions.SpotifyException:
+            pass  # already paused or not playing — fine
 
     print(f"Updating SmartShuffle Queue playlist ({len(songs)} songs)...")
     _push_to_playlist(push_playlist_id, uris)
     time.sleep(1.5)  # wait for Spotify's backend to propagate new tracks
 
-    try:
-        sp.shuffle(False, device_id=device["id"])
-    except spotipy.exceptions.SpotifyException:
-        pass  # non-fatal
+    if not use_applescript:
+        try:
+            sp.shuffle(False, device_id=device["id"])
+        except spotipy.exceptions.SpotifyException:
+            pass  # non-fatal
 
-    try:
-        # Use offset uri (not position) so Spotify unambiguously starts from
-        # song 1 even when the same playlist was already the active context.
-        sp.start_playback(
-            device_id=device["id"],
-            context_uri=push_playlist_uri,
-            offset={"uri": uris[0]},
-        )
-    except spotipy.exceptions.SpotifyException as e:
-        err = str(e)
-        if "403" in err or "PREMIUM" in err.upper():
-            print("\nSpotify Premium required for playback control via API.")
+    if not use_applescript:
+        try:
+            # Use offset uri (not position) so Spotify unambiguously starts from
+            # song 1 even when the same playlist was already the active context.
+            sp.start_playback(
+                device_id=device["id"],
+                context_uri=push_playlist_uri,
+                offset={"uri": uris[0]},
+            )
+        except spotipy.exceptions.SpotifyException as e:
+            err = str(e)
+            if "403" in err or "PREMIUM" in err.upper():
+                print("\nSpotify Premium required for playback control via API.")
+                raise SystemExit(1)
+            elif "404" in err:
+                # Stale device ID — fall back to AppleScript if desktop app is running
+                print(f"  Device {device['id'][:8]}… not found (stale ID); trying AppleScript…")
+                use_applescript = True
+            else:
+                print(f"\nPlayback error: {e}")
+                raise SystemExit(1)
+
+        if not use_applescript:
+            # Second call (resume without context) ensures playback actually starts —
+            # start_playback with context_uri can leave the device in a paused state on macOS.
+            time.sleep(0.5)
+            try:
+                sp.start_playback(device_id=device["id"])
+            except spotipy.exceptions.SpotifyException:
+                pass  # non-fatal: context already set, user can press play manually
+
+    if use_applescript:
+        import subprocess as _subprocess
+        _as_cmd = f'tell application "Spotify" to play track "{push_playlist_uri}"'
+        _as_result = _subprocess.run(["osascript", "-e", _as_cmd], capture_output=True, text=True)
+        if _as_result.returncode != 0:
+            print(f"\nAppleScript playback failed: {_as_result.stderr.strip()}")
             raise SystemExit(1)
-        else:
-            print(f"\nPlayback error: {e}")
-            raise SystemExit(1)
+        print("Playback started via AppleScript.")
 
     # Record the push for play attribution
     conn = sqlite3.connect(DB_PATH)

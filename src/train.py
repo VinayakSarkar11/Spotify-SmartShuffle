@@ -1075,9 +1075,11 @@ def compute_alpha(n_plays: int) -> float:
     return round(max(0.3, 1.0 - (n_plays - MIN_PLAYS) / 500), 3)
 
 def blend_weights(defaults: dict, learned: dict, alpha: float) -> dict:
-    """Linear interpolation between default and learned weights."""
+    """Linear interpolation between default and learned weights.
+    Keys absent from learned (e.g. vibe_match, binge_boost) keep their default value."""
     return {
         k: round(alpha * defaults[k] + (1 - alpha) * learned[k], 4)
+        if k in learned else defaults[k]
         for k in defaults
     }
 

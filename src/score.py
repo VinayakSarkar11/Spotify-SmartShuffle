@@ -789,8 +789,13 @@ def compute_fatigue_scores(df: pd.DataFrame, conn) -> dict:
 
     _sr_decay = np.log(2) / SKIP_RATE_HALF_LIFE_DAYS
     _sr_w = np.exp(-_sr_decay * playlist_plays["_days_ago"]) * stakes_multiplier
-    playlist_plays["_decay_skip"]  = np.where(playlist_plays["inferred_skip"] == "skip",  _sr_w, 0.0)
-    playlist_plays["_decay_known"] = np.where(playlist_plays["inferred_skip"] != "unknown", _sr_w, 0.0)
+    # Only queued plays count toward skip rate — manually chosen songs are user-initiated
+    # and their skips are too noisy to treat as preference signal.
+    _is_queued_play = playlist_plays["play_source"].isin(["smartshuffle_queued", "random_baseline_queued"])
+    playlist_plays["_decay_skip"]  = np.where(
+        (playlist_plays["inferred_skip"] == "skip")    & _is_queued_play, _sr_w, 0.0)
+    playlist_plays["_decay_known"] = np.where(
+        (playlist_plays["inferred_skip"] != "unknown") & _is_queued_play, _sr_w, 0.0)
 
     agg = playlist_plays.groupby("song_id", sort=False).agg(
         play_count   = ("song_id",       "count"),
@@ -827,9 +832,11 @@ def compute_fatigue_scores(df: pd.DataFrame, conn) -> dict:
                 agg.at[song_id, "w_skip"]  += w
                 agg.at[song_id, "w_known"] += w
 
-    # Recent skip rate per song (last 14 days)
+    # Recent skip rate per song (last 14 days) — queued plays only, same rationale as above
     cutoff = now_ts - pd.Timedelta(days=14)
-    recent = playlist_plays[playlist_plays["played_at"] >= cutoff]
+    recent = playlist_plays[
+        (playlist_plays["played_at"] >= cutoff) & _is_queued_play
+    ]
     if not recent.empty:
         recent_agg = recent.groupby("song_id", sort=False).agg(
             recent_count   = ("song_id",       "count"),

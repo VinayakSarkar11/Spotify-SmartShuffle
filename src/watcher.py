@@ -32,6 +32,8 @@ DB_PATH              = os.path.join(DIR, "data", "smartshuffle.db")
 SESSION_STATE_PATH   = os.path.join(DIR, "data", "session_state.json")
 ROLLING_STATE_PATH   = os.path.join(DIR, "data", "rolling_queue_state.json")
 
+ALLOW_RB_ROLLING      = False  # set True to re-enable RB rolling refills
+
 POLL_INTERVAL         = 180  # seconds between polls (non-rolling)
 ROLLING_POLL_INTERVAL = 15   # fast poll when approaching refill threshold
 ROLLING_SLOW_INTERVAL = 90   # slow poll when plenty of songs remain
@@ -175,48 +177,226 @@ def _compute_engagement(plays: list[dict], baseline_skip_rate: float,
     }
 
 
-def _compute_session_vibe(plays: list[dict]) -> tuple[dict | None, int]:
-    """
-    Mean vibe (content, melodic, bpm) of completed songs so far in this session.
-    Used by generate_queue() to drift the vibe target toward what's actually been
-    completing, so rolling refills follow the session instead of resetting.
+RECENT_VIBE_N           = 10   # window size for recency-weighted session vibe
+_MANUAL_VIBE_BOOST      = 3.0  # global session: manual play multiplier
+_MANUAL_VIBE_MAX        = 0.60 # global session: manual plays cap
+_RECENT_MANUAL_BOOST    = 6.0  # recent window: much heavier — one manual in last 10 ≈ 40% weight
+_RECENT_MANUAL_MAX      = 0.85 # recent window: can nearly take over if manual plays dominate
+_SKIP_REPULSION_W       = 0.40 # how hard recent skips push the recent vibe away from skipped vibes
+_SKIP_SIGNAL_WINDOW     = 4    # play window for vibe-level skip detection
+_SKIP_SIGNAL_THRESHOLD  = 2    # min skips in window to trigger signal
+_SKIP_VIBE_DELTA_MIN    = 0.30 # min euclidean dist between skip/completion vibes to count as real signal
+_RECENT_COMPLETIONS_N   = 2    # completions used as the Case 2 parking target
 
-    Returns ({content, melodic, bpm}, n_completed). (None, 0) when no completed
-    plays with vibe scores yet. Skipped songs excluded — strong rejection signal.
-    """
-    completed_ids = [p["song_id"] for p in plays if p["skip_status"] in ("full", "partial")]
-    if not completed_ids:
-        return None, 0
 
+def _get_session_queued_ids(rolling: dict) -> set[str]:
+    """Return the set of song_ids across all pushes in the current rolling session."""
+    session_push_id = rolling.get("session_push_id")
+    if not session_push_id:
+        return set()
     try:
         import sqlite3 as _sqlite3
         conn = _sqlite3.connect(DB_PATH)
-        ph   = ",".join("?" * len(completed_ids))
+        pushes = conn.execute("""
+            SELECT q.songs FROM queue_pushes qp
+            JOIN queues q ON q.queue_id = qp.queue_id
+            WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
+        """, (session_push_id,)).fetchall()
+        conn.close()
+        ids: set[str] = set()
+        for (songs_json,) in pushes:
+            for s in json.loads(songs_json):
+                ids.add(s["song_id"])
+        return ids
+    except Exception:
+        return set()
+
+
+def _load_vibe_map(song_ids: list[str]) -> dict:
+    """Load (vibe_content, vibe_melodic, vibe_bpm) tuples for song_ids from the DB."""
+    if not song_ids:
+        return {}
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(DB_PATH)
+        ph   = ",".join("?" * len(song_ids))
         rows = conn.execute(
-            f"SELECT vibe_content, vibe_melodic, vibe_bpm "
+            f"SELECT song_id, vibe_content, vibe_melodic, vibe_bpm "
             f"FROM songs WHERE song_id IN ({ph})",
-            completed_ids,
+            song_ids,
         ).fetchall()
         conn.close()
+        return {r[0]: (r[1], r[2], r[3]) for r in rows
+                if r[1] is not None and r[2] is not None and r[3] is not None}
     except Exception:
-        return None, 0
-
-    valid = [(r[0], r[1], r[2]) for r in rows
-             if r[0] is not None and r[1] is not None and r[2] is not None]
-    if not valid:
-        return None, 0
-
-    mean_vibe = {
-        "content": round(sum(v[0] for v in valid) / len(valid), 4),
-        "melodic": round(sum(v[1] for v in valid) / len(valid), 4),
-        "bpm":     round(sum(v[2] for v in valid) / len(valid), 4),
-    }
-    return mean_vibe, len(valid)
+        return {}
 
 
-def _write_state(time_bucket: str, eng: dict, plays_seen: int,
-                 session_vibe: tuple[dict | None, int] = (None, 0)):
-    vibe_data, vibe_n = session_vibe
+def _compute_skip_signal(
+    plays: list[dict],
+    vibe_map: dict,
+) -> tuple[dict | None, dict | None, bool]:
+    """
+    Inspect the last _SKIP_SIGNAL_WINDOW plays for a vibe-level rejection signal.
+
+    Triggers when ≥ _SKIP_SIGNAL_THRESHOLD of the window are skips AND the
+    euclidean distance between skip-vibe and completion-vibe exceeds _SKIP_VIBE_DELTA_MIN
+    (small distances mean wrong song, not wrong vibe — ignore those).
+
+    Returns (skip_cluster_vibe, recent_completions_vibe, delta_clear).
+    skip_cluster_vibe:      mean vibe of skipped songs in window (for epsilon shaping)
+    recent_completions_vibe: mean of last _RECENT_COMPLETIONS_N completions (for Case 2 parking)
+    delta_clear:            True when the signal is a real vibe mismatch
+    """
+    _AXES = ("content", "melodic", "bpm")
+
+    def _mean_v(song_list):
+        vs = [vibe_map[p["song_id"]] for p in song_list if p["song_id"] in vibe_map]
+        if not vs:
+            return None
+        return {ax: sum(v[i] for v in vs) / len(vs)
+                for i, ax in enumerate(_AXES)}
+
+    window   = plays[-_SKIP_SIGNAL_WINDOW:]
+    w_skip   = [p for p in window if p["skip_status"] == "skip"]
+    w_comp   = [p for p in window if p["skip_status"] in ("full", "partial")]
+
+    all_comp = [p for p in plays if p["skip_status"] in ("full", "partial")]
+    recent_comp_vibe = _mean_v(all_comp[-_RECENT_COMPLETIONS_N:]) if all_comp else None
+
+    if len(w_skip) < _SKIP_SIGNAL_THRESHOLD:
+        return None, recent_comp_vibe, False
+
+    skip_vibe = _mean_v(w_skip)
+    comp_vibe = _mean_v(w_comp)
+
+    if skip_vibe is None:
+        return None, recent_comp_vibe, False
+
+    delta_clear = False
+    if comp_vibe is not None:
+        dist = sum((skip_vibe[ax] - comp_vibe[ax]) ** 2 for ax in _AXES) ** 0.5
+        delta_clear = dist >= _SKIP_VIBE_DELTA_MIN
+
+    return skip_vibe, recent_comp_vibe, delta_clear
+
+
+def _compute_session_vibe(
+    plays: list[dict],
+    queued_ids: set[str] | None = None,
+    vibe_map: dict | None = None,
+) -> tuple[dict | None, int, dict | None, int, dict | None]:
+    """
+    Mean vibe (content, melodic, bpm) of completed songs so far in this session,
+    plus the mean of the most recent RECENT_VIBE_N completions for recency weighting.
+
+    When queued_ids is provided, manual plays (song_id not in queued_ids) are
+    blended in with boosted weight so the user's steering signal is amplified.
+
+    Returns (blended_mean, n_with_vibes, recent_mean, n_manual, manual_vibe_raw).
+    manual_vibe_raw is the unblended mean of manual plays (for velocity reasoning).
+    """
+    completed = [p for p in plays if p["skip_status"] in ("full", "partial")]
+    if not completed:
+        return None, 0, None, 0, None
+
+    if vibe_map is None:
+        unique_ids = list(dict.fromkeys(p["song_id"] for p in plays))
+        vibe_map   = _load_vibe_map(unique_ids)
+        if not vibe_map:
+            return None, 0, None, 0, None
+
+    def _mean(song_list: list[dict]) -> dict | None:
+        vibes = [vibe_map[p["song_id"]] for p in song_list if p["song_id"] in vibe_map]
+        if not vibes:
+            return None
+        return {
+            "content": round(sum(v[0] for v in vibes) / len(vibes), 4),
+            "melodic": round(sum(v[1] for v in vibes) / len(vibes), 4),
+            "bpm":     round(sum(v[2] for v in vibes) / len(vibes), 4),
+        }
+
+    n_valid = sum(1 for p in completed if p["song_id"] in vibe_map)
+
+    if queued_ids:
+        queued   = [p for p in completed if p["song_id"] in queued_ids]
+        manual   = [p for p in completed if p["song_id"] not in queued_ids]
+        n_manual = len(manual)
+
+        queued_vibe = _mean(queued)
+        manual_vibe = _mean(manual)
+
+        manual_vibe_raw = manual_vibe
+        if manual_vibe and queued_vibe and n_manual > 0:
+            n_q = sum(1 for p in queued if p["song_id"] in vibe_map)
+            n_m = sum(1 for p in manual if p["song_id"] in vibe_map)
+            boosted_m = n_m * _MANUAL_VIBE_BOOST
+            manual_frac = min(boosted_m / (boosted_m + n_q), _MANUAL_VIBE_MAX)
+            all_mean = {
+                ax: round((1 - manual_frac) * queued_vibe[ax]
+                          + manual_frac * manual_vibe[ax], 4)
+                for ax in ("content", "melodic", "bpm")
+            }
+            print(f"  [watcher] manual plays={n_manual}  frac={manual_frac:.2f}"
+                  f"  manual_vibe c={manual_vibe['content']:+.3f}"
+                  f" m={manual_vibe['melodic']:+.3f}"
+                  f" bpm={manual_vibe['bpm']:+.3f}", flush=True)
+        elif manual_vibe and not queued_vibe:
+            all_mean = manual_vibe
+        else:
+            all_mean = queued_vibe or _mean(completed)
+    else:
+        n_manual = 0
+        manual_vibe_raw = None
+        all_mean = _mean(completed)
+
+    # Recent window: last RECENT_VIBE_N plays regardless of skip status, so skips
+    # and manual plays within the window all factor in immediately.
+    recent_window    = plays[-RECENT_VIBE_N:]
+    recent_completed = [p for p in recent_window if p["skip_status"] in ("full", "partial")]
+    recent_skipped   = [p for p in recent_window if p["skip_status"] == "skip"]
+
+    if queued_ids:
+        recent_q  = [p for p in recent_completed if p["song_id"] in queued_ids]
+        recent_m  = [p for p in recent_completed if p["song_id"] not in queued_ids]
+        recent_qv = _mean(recent_q)
+        recent_mv = _mean(recent_m)
+        if recent_mv and recent_qv:
+            n_rq = sum(1 for p in recent_q if p["song_id"] in vibe_map)
+            n_rm = sum(1 for p in recent_m if p["song_id"] in vibe_map)
+            frac = min(n_rm * _RECENT_MANUAL_BOOST / (n_rm * _RECENT_MANUAL_BOOST + n_rq),
+                       _RECENT_MANUAL_MAX)
+            recent_mean = {ax: round((1 - frac) * recent_qv[ax] + frac * recent_mv[ax], 4)
+                           for ax in ("content", "melodic", "bpm")}
+        else:
+            recent_mean = recent_mv or recent_qv or _mean(recent_completed)
+    else:
+        recent_mean = _mean(recent_completed)
+
+    # Skip repulsion: push recent_mean away from the mean vibe of recently-skipped songs.
+    # Only uses the current window so old skips don't accumulate.
+    if recent_mean:
+        skip_vibe = _mean(recent_skipped)
+        if skip_vibe:
+            recent_mean = {
+                ax: round(max(-1.0, min(1.0,
+                    recent_mean[ax] + _SKIP_REPULSION_W * (recent_mean[ax] - skip_vibe[ax])
+                )), 4)
+                for ax in ("content", "melodic", "bpm")
+            }
+
+    return all_mean, n_valid, recent_mean, n_manual, manual_vibe_raw
+
+
+def _write_state(
+    time_bucket: str,
+    eng: dict,
+    plays_seen: int,
+    session_vibe: tuple = (None, 0, None, 0, None),
+    skip_signal: tuple = (None, None, False),
+):
+    vibe_data, vibe_n, recent_vibe, n_manual, manual_vibe_raw = session_vibe
+    skip_cluster_vibe, recent_comp_vibe, delta_clear = skip_signal
     state = {
         "time_bucket":               time_bucket,
         "engagement_delta":          eng["overall_delta"],
@@ -227,6 +407,20 @@ def _write_state(time_bucket: str, eng: dict, plays_seen: int,
         "session_vibe_content_mean": vibe_data["content"] if vibe_data else None,
         "session_vibe_melodic_mean": vibe_data["melodic"] if vibe_data else None,
         "session_vibe_bpm_mean":     vibe_data["bpm"]     if vibe_data else None,
+        "session_vibe_recent_content": recent_vibe["content"] if recent_vibe else None,
+        "session_vibe_recent_melodic": recent_vibe["melodic"] if recent_vibe else None,
+        "session_vibe_recent_bpm":     recent_vibe["bpm"]     if recent_vibe else None,
+        "manual_plays_n":            n_manual,
+        "manual_vibe_content":       manual_vibe_raw["content"] if manual_vibe_raw else None,
+        "manual_vibe_melodic":       manual_vibe_raw["melodic"] if manual_vibe_raw else None,
+        "manual_vibe_bpm":           manual_vibe_raw["bpm"]     if manual_vibe_raw else None,
+        "skip_cluster_vibe_content": skip_cluster_vibe["content"] if skip_cluster_vibe else None,
+        "skip_cluster_vibe_melodic": skip_cluster_vibe["melodic"] if skip_cluster_vibe else None,
+        "skip_cluster_vibe_bpm":     skip_cluster_vibe["bpm"]     if skip_cluster_vibe else None,
+        "recent_comp_vibe_content":  recent_comp_vibe["content"]  if recent_comp_vibe else None,
+        "recent_comp_vibe_melodic":  recent_comp_vibe["melodic"]  if recent_comp_vibe else None,
+        "recent_comp_vibe_bpm":      recent_comp_vibe["bpm"]      if recent_comp_vibe else None,
+        "skip_delta_clear":          delta_clear,
         "updated_at":                datetime.now(timezone.utc).isoformat(),
     }
     tmp = SESSION_STATE_PATH + ".tmp"
@@ -345,6 +539,11 @@ def _check_refill(sp, plays: list[dict], rolling: dict) -> int | None:
 
     source_playlist_id = rolling.get("source_playlist_id")
     algorithm          = rolling.get("algorithm", "smartshuffle")
+
+    if algorithm == "random_baseline" and not ALLOW_RB_ROLLING:
+        print("  [watcher] RB rolling refill blocked (ALLOW_RB_ROLLING=False).", flush=True)
+        return remaining
+
     context            = _current_bucket()
 
     # All songs ever generated for this rolling session (initial push + all prior refills).
@@ -509,22 +708,33 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
         prev_state = read_session_state()
         eng        = _compute_engagement(plays, baseline_skip_rate,
                                          prev_state.get("ever_high_skip", False))
-        session_v  = _compute_session_vibe(plays)
-        _write_state(time_bucket, eng, len(plays), session_v)
+        queued_ids = _get_session_queued_ids(rolling)
+        all_song_ids = list(dict.fromkeys(p["song_id"] for p in plays))
+        vibe_map   = _load_vibe_map(all_song_ids)
+        session_v  = _compute_session_vibe(plays, queued_ids, vibe_map)
+        skip_sig   = _compute_skip_signal(plays, vibe_map)
+        _write_state(time_bucket, eng, len(plays), session_v, skip_sig)
 
         if len(plays) >= MIN_PLAYS:
-            vibe_data, vibe_n = session_v
-            v_str = (
-                f"  vibe c={vibe_data['content']:+.2f}"
-                f" m={vibe_data['melodic']:+.2f}"
-                f" bpm={vibe_data['bpm']:+.2f}(n={vibe_n})"
-                if vibe_data else ""
-            )
+            vibe_data, vibe_n, recent_vibe, n_manual, _manual_vibe_raw = session_v
+            v_str = ""
+            if vibe_data:
+                v_str = (
+                    f"  vibe c={vibe_data['content']:+.2f}"
+                    f" m={vibe_data['melodic']:+.2f}"
+                    f" bpm={vibe_data['bpm']:+.2f}(n={vibe_n})"
+                )
+                if recent_vibe:
+                    v_str += (
+                        f"  r10 c={recent_vibe['content']:+.2f}"
+                        f" m={recent_vibe['melodic']:+.2f}"
+                    )
+            manual_str = f"  manual={n_manual}" if n_manual else ""
             print(f"  [watcher] {len(plays)} plays"
                   f"  overall={eng['overall_delta']:+.1%}"
                   f"  recent={eng['recent_skip_rate']:.1%}"
                   f"  ever_high={eng['ever_high_skip']}"
-                  f"{v_str}", flush=True)
+                  f"{manual_str}{v_str}", flush=True)
 
         # Refill check before standby — ensures we don't miss the threshold
         # if the user paused and the idle timer fires while songs remain.

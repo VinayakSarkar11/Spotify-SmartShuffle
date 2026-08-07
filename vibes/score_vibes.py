@@ -23,6 +23,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--song", default=None,
                     help="Rescore a specific song by name (case-insensitive substring). "
                          "Clears existing score and re-runs just that song.")
+parser.add_argument("--playlist", default=None,
+                    help="Only score unscored songs in this playlist_id. "
+                         "When omitted, scores all unscored songs in the library.")
 args = parser.parse_args()
 
 _ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -155,13 +158,24 @@ already_scored = conn.execute(
     "SELECT COUNT(*) FROM songs WHERE vibe_content IS NOT NULL"
 ).fetchone()[0]
 
-rows = conn.execute("""
-    SELECT s.song_id, s.song_name, s.artist_name, st.tags
-    FROM songs s
-    LEFT JOIN song_tags st ON st.song_id = s.song_id
-    WHERE s.vibe_content IS NULL
-    ORDER BY s.song_name
-""").fetchall()
+if args.playlist:
+    rows = conn.execute("""
+        SELECT s.song_id, s.song_name, s.artist_name, st.tags
+        FROM songs s
+        JOIN playlist_tracks pt ON pt.song_id = s.song_id
+        LEFT JOIN song_tags st ON st.song_id = s.song_id
+        WHERE s.vibe_content IS NULL
+          AND pt.playlist_id = ?
+        ORDER BY s.song_name
+    """, (args.playlist,)).fetchall()
+else:
+    rows = conn.execute("""
+        SELECT s.song_id, s.song_name, s.artist_name, st.tags
+        FROM songs s
+        LEFT JOIN song_tags st ON st.song_id = s.song_id
+        WHERE s.vibe_content IS NULL
+        ORDER BY s.song_name
+    """).fetchall()
 
 songs = []
 for r in rows:
