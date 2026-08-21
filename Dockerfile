@@ -9,6 +9,8 @@ COPY . .
 
 RUN mkdir -p data/users logs
 
-EXPOSE 8080
+# Run from web/ so `from auth import ...` resolves correctly.
+# __file__-based ROOT paths still resolve to /app since they use abspath.
+WORKDIR /app/web
 
-CMD ["bash", "web/entrypoint.sh"]
+CMD uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --workers 1
