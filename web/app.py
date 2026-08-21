@@ -240,24 +240,6 @@ async def health():
     return JSONResponse({k: bool(os.getenv(k)) for k in keys})
 
 
-@app.post("/admin/upload-db")
-async def admin_upload_db(request: Request):
-    secret = os.getenv("ADMIN_UPLOAD_SECRET", "")
-    if not secret or request.headers.get("X-Admin-Secret") != secret:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    body = await request.body()
-    if not body:
-        return JSONResponse({"error": "Empty body"}, status_code=400)
-    db_path = os.path.join(ROOT, "data", "smartshuffle.db")
-    tmp_path = db_path + ".upload.tmp"
-    try:
-        with open(tmp_path, "wb") as f:
-            f.write(body)
-        os.replace(tmp_path, db_path)
-        return JSONResponse({"ok": True, "bytes": len(body)})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
 
 @app.get("/")
 async def index(request: Request):
