@@ -231,6 +231,15 @@ def _global_stats() -> dict:
     return _global_stats_cache
 
 
+@app.get("/health")
+async def health():
+    """Diagnostic: shows which env vars are present (not their values)."""
+    keys = ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_OWNER_ID",
+            "SPOTIFY_REDIRECT_URI", "FERNET_KEY", "SESSION_SECRET_KEY",
+            "LASTFM_API_KEY", "RAILWAY_ENVIRONMENT"]
+    return JSONResponse({k: bool(os.getenv(k)) for k in keys})
+
+
 @app.get("/")
 async def index(request: Request):
     user_id = request.session.get("user_id")
