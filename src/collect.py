@@ -1019,6 +1019,25 @@ def _infer_rolling_session_skips(conn, rolling_session_id: int):
     conn.commit()
 
 
+# ── Data retention ───────────────────────────────────────────────────────────
+
+def purge_old_plays(conn, days: int = 90) -> int:
+    """Delete raw play records older than `days` days.
+
+    Binge episodes, sessions, and song scores are intentionally preserved —
+    they are aggregated/derived and are needed for longitudinal analysis.
+    Only the raw Spotify play rows are subject to the retention window.
+    """
+    conn.execute("""
+        DELETE FROM plays
+        WHERE REPLACE(SUBSTR(played_at, 1, 19), 'T', ' ')
+            < datetime('now', '-' || ? || ' days')
+    """, (days,))
+    deleted = conn.execute("SELECT changes()").fetchone()[0]
+    conn.commit()
+    return deleted
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1072,6 +1091,10 @@ def main():
     print(f"  Skip inference:")
     for skip, count in skip_breakdown:
         print(f"    {skip or 'unknown'}: {count}")
+
+    purged = purge_old_plays(conn)
+    if purged:
+        print(f"\n  Purged {purged} play records older than 90 days.")
 
     conn.close()
     print(f"\nDone: {now_iso()}")

@@ -29,12 +29,13 @@ from spotipy.oauth2 import SpotifyOAuth
 load_dotenv()
 
 DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(DIR, "data", "smartshuffle.db")
-ROLLING_STATE_PATH = os.path.join(DIR, "data", "rolling_queue_state.json")
+# SS_DB_PATH / SS_ROLLING_STATE are injected by the web app for multi-user runs.
+DB_PATH            = os.getenv("SS_DB_PATH")            or os.path.join(DIR, "data", "smartshuffle.db")
+ROLLING_STATE_PATH = os.getenv("SS_ROLLING_STATE")      or os.path.join(DIR, "data", "rolling_queue_state.json")
 WATCHER_PID_PATH   = os.path.join(DIR, "data", "watcher.pid")
 
 RANDOM_BASELINE_FRACTION = 0.0
-ALLOW_RB_ROLLING         = False   # set True to re-enable RB rolling sessions
+ALLOW_RB_ROLLING         = False
 
 SCOPE = " ".join([
     "user-read-recently-played",
@@ -46,13 +47,19 @@ SCOPE = " ".join([
     "user-read-playback-state",
 ])
 
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id     = os.getenv("SPOTIFY_CLIENT_ID"),
-    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
-    redirect_uri  = os.getenv("SPOTIFY_REDIRECT_URI"),
-    scope         = SCOPE,
-    cache_path    = os.path.join(DIR, ".spotify_cache"),
-))
+# SS_ACCESS_TOKEN is injected by the web app so subprocesses don't need to
+# re-authenticate.  Falls back to SpotifyOAuth cache for standalone CLI use.
+_token_override = os.getenv("SS_ACCESS_TOKEN")
+if _token_override:
+    sp = spotipy.Spotify(auth=_token_override)
+else:
+    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+        client_id     = os.getenv("SPOTIFY_CLIENT_ID"),
+        client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
+        redirect_uri  = os.getenv("SPOTIFY_REDIRECT_URI"),
+        scope         = SCOPE,
+        cache_path    = os.path.join(DIR, ".spotify_cache"),
+    ))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -411,11 +418,16 @@ def _start_watcher():
             pass
 
     log_path = os.path.join(DIR, "logs", "watcher.log")
+    # Strip SS_ACCESS_TOKEN so the watcher uses SpotifyOAuth (auto-refresh).
+    # The short-lived injected token would cause refills to silently fail after 1 h.
+    watcher_env = os.environ.copy()
+    watcher_env.pop("SS_ACCESS_TOKEN", None)
     proc = subprocess.Popen(
         [sys.executable, "-u", os.path.join(DIR, "src", "watcher.py")],
         start_new_session=True,
         stdout=open(log_path, "a"),
         stderr=subprocess.STDOUT,
+        env=watcher_env,
     )
     with open(WATCHER_PID_PATH, "w") as f:
         f.write(str(proc.pid))

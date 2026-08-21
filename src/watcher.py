@@ -28,9 +28,10 @@ from spotipy.oauth2 import SpotifyOAuth
 load_dotenv()
 
 DIR                  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH              = os.path.join(DIR, "data", "smartshuffle.db")
-SESSION_STATE_PATH   = os.path.join(DIR, "data", "session_state.json")
-ROLLING_STATE_PATH   = os.path.join(DIR, "data", "rolling_queue_state.json")
+# SS_* vars injected by the web app for multi-user runs; fall back to owner paths.
+DB_PATH            = os.getenv("SS_DB_PATH")       or os.path.join(DIR, "data", "smartshuffle.db")
+SESSION_STATE_PATH = os.getenv("SS_SESSION_STATE") or os.path.join(DIR, "data", "session_state.json")
+ROLLING_STATE_PATH = os.getenv("SS_ROLLING_STATE") or os.path.join(DIR, "data", "rolling_queue_state.json")
 
 ALLOW_RB_ROLLING      = False  # set True to re-enable RB rolling refills
 
@@ -90,6 +91,10 @@ SCOPE = " ".join([
 
 
 def _make_sp():
+    # SS_ACCESS_TOKEN injected by the web app for multi-user runs.
+    token = os.getenv("SS_ACCESS_TOKEN")
+    if token:
+        return spotipy.Spotify(auth=token)
     return spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=os.getenv("SPOTIFY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
@@ -707,6 +712,12 @@ def _check_refill(
         phase34_cmd += ["--playlist", source_playlist_id]
     if exclude_ids:
         phase34_cmd += ["--exclude", ",".join(exclude_ids)]
+    target_override = rolling.get("target_override")
+    if target_override:
+        c = target_override.get("content", 0)
+        m = target_override.get("melodic", 0)
+        b = target_override.get("bpm", 0)
+        phase34_cmd += ["--target", f"{c},{m},{b}"]
 
     try:
         subprocess.run(phase34_cmd, check=True, capture_output=True, text=True, timeout=30)

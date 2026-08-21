@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · SmartShuffle{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto px-6 py-10">
+
+  <!-- Header -->
+  <div class="mb-8">
+    <h1 class="text-3xl font-bold">Dashboard</h1>
+    <p class="text-gray-400 mt-1 text-sm">
+      SmartShuffle · rolling queue · live data
+    </p>
+  </div>
+
+  <!-- Summary stats ──────────────────────────────────────────────────────── -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div id="stat-plays" class="text-3xl font-bold">—</div>
+      <div class="text-xs text-gray-500 mt-1">plays tracked</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div id="stat-songs" class="text-3xl font-bold">—</div>
+      <div class="text-xs text-gray-500 mt-1">songs vibe-scored</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div id="stat-sessions" class="text-3xl font-bold">—</div>
+      <div class="text-xs text-gray-500 mt-1">rolling sessions (4+ plays)</div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div id="stat-session-len" class="text-3xl font-bold">—</div>
+      <div class="text-xs text-gray-500 mt-1">avg songs / session</div>
+    </div>
+  </div>
+
+  <!-- Rolling skip rate ──────────────────────────────────────────────────── -->
+  <div class="bg-gray-900 border border-spotify/20 rounded-xl p-6 mb-8">
+    <div class="flex items-center justify-between flex-wrap gap-4">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-spotify"></span>
+        <span class="font-semibold">SmartShuffle · rolling mode</span>
+      </div>
+      <div class="flex gap-10">
+        <div class="text-right">
+          <div id="ss-skip" class="text-3xl font-bold text-spotify">—</div>
+          <div class="text-xs text-gray-500 mt-1">skip rate</div>
+        </div>
+        <div class="text-right">
+          <div id="ss-sessions" class="text-3xl font-bold text-gray-300">—</div>
+          <div class="text-xs text-gray-500 mt-1">qualifying sessions</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Weekly engagement trend ────────────────────────────────────────────── -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+    <h2 class="font-semibold mb-1">Weekly plays</h2>
+    <p class="text-xs text-gray-500 mb-5">Rolling sessions · last 12 weeks · green = completed, gray = queue-skipped before starting</p>
+    <canvas id="trend-chart" height="75"></canvas>
+  </div>
+
+  <!-- Vibe distributions ─────────────────────────────────────────────────── -->
+  <div class="grid md:grid-cols-3 gap-4 mb-8">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+      <h3 class="font-semibold text-sm mb-0.5">Content axis</h3>
+      <p class="text-xs text-gray-500 mb-4">introspective ← → aggressive</p>
+      <canvas id="vibe-content-chart" height="130"></canvas>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+      <h3 class="font-semibold text-sm mb-0.5">Melodic axis</h3>
+      <p class="text-xs text-gray-500 mb-4">sung ← → rap</p>
+      <canvas id="vibe-melodic-chart" height="130"></canvas>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+      <h3 class="font-semibold text-sm mb-0.5">BPM axis</h3>
+      <p class="text-xs text-gray-500 mb-4">slow ← → fast</p>
+      <canvas id="vibe-bpm-chart" height="130"></canvas>
+    </div>
+  </div>
+
+  <!-- Recent sessions ────────────────────────────────────────────────────── -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+    <h2 class="font-semibold mb-1">Recent sessions</h2>
+    <p class="text-xs text-gray-500 mb-5">Sessions with 4+ plays · click to see vibe breakdown</p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-gray-500 border-b border-gray-800 text-left">
+            <th class="pb-3 pr-6 font-medium">Date</th>
+            <th class="pb-3 pr-6 font-medium">Playlist</th>
+            <th class="pb-3 pr-4 font-medium text-right">Queued</th>
+            <th class="pb-3 pr-4 font-medium text-right">Played</th>
+            <th class="pb-3 font-medium text-right">Skip rate</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-tbody" class="divide-y divide-gray-800/70">
+          <tr>
+            <td colspan="5" class="py-6 text-gray-600 text-center text-sm">Loading…</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+"use strict";
+
+// ── Chart defaults ───────────────────────────────────────────────────────────
+Chart.defaults.color       = '#6b7280';
+Chart.defaults.borderColor = '#1f2937';
+Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+Chart.defaults.font.size   = 11;
+
+const SPOTIFY = '#1DB954';
+const AMBER   = '#f59e0b';
+const INDIGO  = '#818cf8';
+
+// ── Vibe axis helpers ────────────────────────────────────────────────────────
+const AXES = {
+  content: { lo: 'Introspective', hi: 'Aggressive', color: SPOTIFY },
+  melodic: { lo: 'Sung',          hi: 'Rap',        color: AMBER   },
+  bpm:     { lo: 'Slow',          hi: 'Fast',        color: INDIGO  },
+};
+
+function describe(axis, v) {
+  if (v == null) return '—';
+  if (axis === 'content') {
+    if (v < -0.6) return 'introspective';
+    if (v < -0.2) return 'reflective';
+    if (v <  0.2) return 'balanced';
+    if (v <  0.6) return 'assertive';
+    return 'aggressive';
+  }
+  if (axis === 'melodic') {
+    if (v < -0.6) return 'fully sung';
+    if (v < -0.2) return 'mostly melodic';
+    if (v <  0.2) return 'mixed';
+    if (v <  0.6) return 'rap-led';
+    return 'pure rap';
+  }
+  if (axis === 'bpm') {
+    if (v < -0.6) return 'slow';
+    if (v < -0.2) return 'mid-tempo';
+    if (v <  0.2) return 'moderate';
+    if (v <  0.6) return 'uptempo';
+    return 'fast';
+  }
+  return '';
+}
+
+function driftText(axis, delta) {
+  if (delta == null) return '';
+  const mag  = Math.abs(delta);
+  if (mag < 0.05) return 'minimal drift';
+  const size = mag < 0.15 ? 'slightly' : mag < 0.30 ? 'notably' : 'strongly';
+  const dirs = {
+    content: [size + ' more introspective', size + ' more aggressive'],
+    melodic: [size + ' more melodic',       size + ' more rap-led'],
+    bpm:     [size + ' slower',             size + ' faster'],
+  };
+  const [neg, pos] = dirs[axis] || ['', ''];
+  return delta < 0 ? neg : pos;
+}
+
+function vibeBar(axis, value, target) {
+  const cfg   = AXES[axis];
+  const pct   = value != null ? Math.max(2, Math.min(98, (value + 1) / 2 * 100)).toFixed(1) : 50;
+  const delta = (value != null && target != null) ? value - target : null;
+  const dText = driftText(axis, delta);
+  const dSign = delta != null && delta >= 0 ? '+' : '';
+  const dCol  = delta == null ? '#4b5563'
+              : Math.abs(delta) < 0.05 ? '#4b5563'
+              : delta > 0 ? '#10b981' : '#f59e0b';
+
+  return `
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-xs font-medium text-gray-300 capitalize">${axis}</span>
+        ${delta != null
+          ? `<span class="text-xs font-mono" style="color:${dCol}">${dSign}${delta.toFixed(2)} · ${dText}</span>`
+          : `<span class="text-xs text-gray-600">no target set</span>`}
+      </div>
+      <div class="relative h-1.5 bg-gray-700 rounded-full mb-1">
+        <div class="absolute top-0 h-1.5 rounded-full transition-all"
+             style="width:${pct}%;background:${cfg.color}"></div>
+        ${target != null
+          ? `<div class="absolute top-0 h-1.5 w-0.5 bg-white/30 rounded-full"
+                  style="left:${Math.max(2, Math.min(98, (target + 1) / 2 * 100)).toFixed(1)}%"></div>`
+          : ''}
+      </div>
+      <div class="flex justify-between text-xs text-gray-600">
+        <span>${cfg.lo}</span>
+        <span class="text-gray-400">${describe(axis, value)}</span>
+        <span>${cfg.hi}</span>
+      </div>
+    </div>`;
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function pct(v)     { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
+function num(v)     { return v != null ? (+v).toLocaleString() : '—'; }
+function f1(v)      { return v != null ? (+v).toFixed(1) : '—'; }
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+         + ' · '
+         + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } catch { return iso.slice(0, 16); }
+}
+
+// ── Vibe chart (small bar chart in the distribution section) ─────────────────
+function vibeDistChart(id, rows, color) {
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: {
+      labels:   rows.map(r => r.bucket.toFixed(1)),
+      datasets: [{ data: rows.map(r => r.n), backgroundColor: color + '55',
+                   borderColor: color, borderWidth: 1, borderRadius: 2 }],
+    },
+    options: {
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        label: ctx => ` ${ctx.raw} songs`,
+      }}},
+      scales: { y: { ticks: { maxTicksLimit: 4 } } },
+    },
+  });
+}
+
+// ── Session expand / collapse ─────────────────────────────────────────────────
+function buildDetailRow(r) {
+  const t = r.vibe_target;
+  const bars = ['content', 'melodic', 'bpm'].map(ax =>
+    vibeBar(ax, r[`avg_${ax}`], t ? t[ax] : null)
+  ).join('');
+
+  // Summary sentence
+  let summary = '';
+  if (t && r.avg_content != null) {
+    const parts = ['content', 'melodic', 'bpm']
+      .map(ax => {
+        const d = r[`avg_${ax}`] - t[ax];
+        const txt = driftText(ax, d);
+        return Math.abs(d) >= 0.05 ? txt : null;
+      })
+      .filter(Boolean);
+    summary = parts.length
+      ? `Session ran <span class="text-gray-300">${parts.join(', ')}</span> vs playlist target.`
+      : 'Session stayed close to the playlist target across all axes.';
+  } else if (r.avg_content != null) {
+    summary = 'No vibe target set for this playlist — showing raw session vibe.';
+  }
+
+  return `
+    <tr class="detail-row bg-gray-800/30">
+      <td colspan="5" class="px-6 py-5">
+        <div class="grid md:grid-cols-3 gap-6 mb-4">${bars}</div>
+        ${summary ? `<p class="text-xs text-gray-500 mt-2">${summary}</p>` : ''}
+      </td>
+    </tr>`;
+}
+
+function toggleDetail(push_id, detailHtml, btn) {
+  const existing = document.getElementById(`detail-${push_id}`);
+  if (existing) {
+    existing.remove();
+    btn.textContent = '›';
+    btn.style.transform = '';
+    return;
+  }
+  const tr = document.getElementById(`row-${push_id}`);
+  tr.insertAdjacentHTML('afterend', `<tr id="detail-${push_id}">${detailHtml.match(/<tr[^>]*>([\s\S]*)<\/tr>/)?.[1] ?? detailHtml}</tr>`);
+  // Actually easier: just insert the detail row after
+  btn.textContent = '›';
+  btn.style.transform = 'rotate(90deg)';
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+async function load() {
+  let data;
+  try {
+    const resp = await fetch('/api/stats');
+    if (!resp.ok) throw new Error(resp.statusText);
+    data = await resp.json();
+  } catch (e) {
+    document.getElementById('sessions-tbody').innerHTML =
+      `<tr><td colspan="5" class="py-6 text-red-400 text-center text-sm">
+        Failed to load — is the server running? (${e})</td></tr>`;
+    return;
+  }
+
+  // Summary
+  const s = data.summary;
+  document.getElementById('stat-plays').textContent       = num(s.total_plays);
+  document.getElementById('stat-songs').textContent       = num(s.scored_songs);
+  document.getElementById('stat-sessions').textContent    = num(s.rolling_sessions);
+  document.getElementById('stat-session-len').textContent = f1(s.avg_session_songs);
+
+  // Skip rate card
+  document.getElementById('ss-skip').textContent     = pct(data.rolling_skip_rate);
+  document.getElementById('ss-sessions').textContent = num(data.summary.rolling_sessions);
+
+  // Engagement trend (stacked bar: plays + queue skips)
+  const weeks = data.trend.map(r => r.week.replace(/^\d+-W/, 'W'));
+  new Chart(document.getElementById('trend-chart'), {
+    type: 'bar',
+    data: {
+      labels: weeks,
+      datasets: [
+        {
+          label:           'Plays',
+          data:            data.trend.map(r => r.plays_n),
+          backgroundColor: SPOTIFY + 'bb',
+          borderRadius:    { topLeft: 3, topRight: 3 },
+          stack:           'usage',
+        },
+        {
+          label:           'Queue skips',
+          data:            data.trend.map(r => r.qs_n),
+          backgroundColor: '#374151',
+          borderRadius:    { topLeft: 3, topRight: 3 },
+          stack:           'usage',
+        },
+      ],
+    },
+    options: {
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16 } } },
+      scales:  { y: { stacked: true, ticks: { maxTicksLimit: 5 } }, x: { stacked: true } },
+    },
+  });
+
+  // Vibe distributions
+  vibeDistChart('vibe-content-chart', data.vibe_dists.vibe_content, SPOTIFY);
+  vibeDistChart('vibe-melodic-chart', data.vibe_dists.vibe_melodic, AMBER);
+  vibeDistChart('vibe-bpm-chart',     data.vibe_dists.vibe_bpm,     INDIGO);
+
+  // Sessions table
+  const tbody = document.getElementById('sessions-tbody');
+  if (!data.history.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="py-6 text-gray-600 text-center text-sm">No qualifying sessions yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.history.map(r => {
+    const pl     = (r.playlist_name || '—').trim();
+    const skipV  = r.skip_rate;
+    const skipCl = skipV == null ? 'text-gray-600'
+                 : skipV < 0.25  ? 'text-spotify'
+                 : skipV > 0.45  ? 'text-red-400' : 'text-gray-300';
+    const skipStr = skipV != null ? `${(skipV * 100).toFixed(0)}%` : '—';
+
+    // Encode vibe data for the expand panel
+    const vibeData = JSON.stringify({
+      avg_content: r.avg_content,
+      avg_melodic: r.avg_melodic,
+      avg_bpm:     r.avg_bpm,
+      vibe_target: r.vibe_target,
+    }).replace(/"/g, '&quot;');
+
+    return `
+      <tr id="row-${r.push_id}"
+          class="hover:bg-gray-800/40 transition-colors cursor-pointer select-none"
+          onclick="expandRow(${r.push_id}, this)">
+        <td class="py-3 pr-6 text-gray-400 whitespace-nowrap">
+          <span class="mr-2 text-gray-600 inline-block transition-transform" id="chevron-${r.push_id}">›</span>
+          ${fmtDate(r.pushed_at)}
+        </td>
+        <td class="py-3 pr-6 text-gray-300 max-w-[180px] truncate" title="${pl}">${pl}</td>
+        <td class="py-3 pr-4 text-gray-500 text-right">${r.total_queued ?? '—'}</td>
+        <td class="py-3 pr-4 text-gray-400 text-right">${r.plays_n ?? '—'}</td>
+        <td class="py-3 text-right"><span class="${skipCl} font-medium">${skipStr}</span></td>
+        <td class="hidden" data-vibe="${vibeData}"></td>
+      </tr>`;
+  }).join('');
+}
+
+function expandRow(push_id, rowEl) {
+  const existing = document.getElementById(`detail-${push_id}`);
+  const chevron  = document.getElementById(`chevron-${push_id}`);
+
+  if (existing) {
+    existing.remove();
+    chevron.style.transform = '';
+    return;
+  }
+
+  // Read vibe data from hidden cell
+  const vibeCell = rowEl.querySelector('[data-vibe]');
+  const r        = JSON.parse(vibeCell.getAttribute('data-vibe').replace(/&quot;/g, '"'));
+  const t        = r.vibe_target;
+
+  const bars = ['content', 'melodic', 'bpm'].map(ax =>
+    vibeBar(ax, r[`avg_${ax}`], t ? t[ax] : null)
+  ).join('');
+
+  // Drift summary sentence
+  let summary = '';
+  if (t && r.avg_content != null) {
+    const parts = ['content', 'melodic', 'bpm']
+      .map(ax => {
+        const d = r[`avg_${ax}`] - t[ax];
+        return Math.abs(d) >= 0.05 ? driftText(ax, d) : null;
+      })
+      .filter(Boolean);
+    summary = parts.length
+      ? `Session ran <span class="text-gray-300">${parts.join(', ')}</span> vs the playlist target.`
+      : 'Session stayed close to the playlist target on all three axes.';
+  } else if (r.avg_content != null) {
+    summary = 'No vibe target set for this playlist — showing raw session vibe.';
+  }
+
+  const detailRow = document.createElement('tr');
+  detailRow.id        = `detail-${push_id}`;
+  detailRow.className = 'bg-gray-800/20';
+  detailRow.innerHTML = `
+    <td colspan="5" class="px-6 py-5 border-b border-gray-800/60">
+      <div class="grid md:grid-cols-3 gap-6 mb-3">${bars}</div>
+      ${summary ? `<p class="text-xs text-gray-500">${summary}</p>` : ''}
+    </td>`;
+
+  rowEl.insertAdjacentElement('afterend', detailRow);
+  chevron.style.transform = 'rotate(90deg)';
+}
+
+load();
+</script>
+{% endblock %}

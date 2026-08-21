@@ -1010,10 +1010,18 @@ def _softmax_pick(scores: pd.Series, temperature: float = SCORE_TEMPERATURE) -> 
     temperature=0 falls back to argmax (used by tests)."""
     if temperature <= 0:
         return scores.idxmax()
-    vals  = scores.values.astype(float)
-    vals  = vals - vals.max()                        # numerical stability
+    vals = scores.values.astype(float)
+    mx   = vals.max()
+    # All candidates filtered to -inf (epsilon walls, cluster constraints, etc.) —
+    # fall back to argmax so we always return something rather than NaN-crashing.
+    if not np.isfinite(mx):
+        return scores.idxmax()
+    vals  = vals - mx                                # numerical stability
     probs = np.exp(vals / temperature)
-    probs = probs / probs.sum()
+    total = probs.sum()
+    if total == 0 or not np.isfinite(total):
+        return scores.idxmax()
+    probs = probs / total
     return scores.index[np.random.choice(len(scores), p=probs)]
 
 
@@ -1071,7 +1079,8 @@ def _pick_best(pool: pd.DataFrame, used: set, target_energy: float,
 
 def generate_queue(df: pd.DataFrame, context: str,
                    n: int = None, weights: dict = None, conn=None,
-                   playlist_id: str = None) -> list:
+                   playlist_id: str = None,
+                   target_vibe_override: dict | None = None) -> list:
     """
     Score-ranked queue builder.
 
@@ -1133,8 +1142,8 @@ def generate_queue(df: pd.DataFrame, context: str,
           f"  bpm={vibe_sigmas['bpm']:.3f}"
           + ("  (tightened)" if mult < 1.0 else "  (baseline)"))
 
-    # Vibe target for this playlist (from learned_params.json).
-    target_vibe = get_target_vibe(playlist_id)
+    # Vibe target: manual override takes precedence over learned target.
+    target_vibe = target_vibe_override or get_target_vibe(playlist_id)
     if target_vibe:
         print(f"  Vibe targets  c={target_vibe['content']:+.3f}  "
               f"m={target_vibe['melodic']:+.3f}  b={target_vibe['bpm']:+.3f}")
@@ -1521,6 +1530,8 @@ def main():
     parser.add_argument("--algorithm", default="smartshuffle",
                         choices=["smartshuffle", "random_baseline"],
                         help="Queue algorithm to generate (default: smartshuffle)")
+    parser.add_argument("--target",   default=None,
+                        help="Override vibe target: content,melodic,bpm (e.g. 0.1,-0.3,0.5)")
     args = parser.parse_args()
 
     conn = sqlite3.connect(DB_PATH)
@@ -1616,8 +1627,18 @@ def main():
     df, labels = cluster_playlist(conn, df, k=args.k)
     print_clusters(df, labels)
 
+    target_override = None
+    if args.target:
+        try:
+            c, m, b = [float(x) for x in args.target.split(",")]
+            target_override = {"content": c, "melodic": m, "bpm": b}
+            print(f"  Vibe target override: c={c:+.3f}  m={m:+.3f}  b={b:+.3f}")
+        except ValueError:
+            print(f"WARNING: --target '{args.target}' malformed, using learned target")
+
     print("\nGenerating queue (Phase 4)...")
-    ss_queue = generate_queue(df, context, n=args.count, conn=conn, playlist_id=playlist_id)
+    ss_queue = generate_queue(df, context, n=args.count, conn=conn, playlist_id=playlist_id,
+                              target_vibe_override=target_override)
     save_queue(conn, ss_queue, context, playlist_id)
 
     print_queue(ss_queue, context, scores=args.scores)

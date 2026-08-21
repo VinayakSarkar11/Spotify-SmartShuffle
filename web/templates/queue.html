@@ -1,0 +1,764 @@
+{% extends "base.html" %}
+{% block title %}Live Queue — SmartShuffle{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-6 py-10" id="queue-root">
+
+  <!-- Header -->
+  <div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+    <div>
+      <h1 class="text-2xl font-bold mb-1">Live Queue</h1>
+      <p class="text-sm text-gray-400" id="queue-subtitle">Loading…</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-spotify animate-pulse"></span>
+      <span class="text-xs text-gray-400" id="queue-status">—</span>
+    </div>
+  </div>
+
+  <!-- Start queue panel -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl px-6 py-5 mb-6" id="start-panel">
+    <div class="flex items-center gap-3 flex-wrap">
+
+      <!-- Custom dropdown -->
+      <div class="relative flex-1 min-w-[200px]" id="dd-wrapper">
+        <button type="button" id="dd-trigger" onclick="toggleDropdown()"
+                class="w-full flex items-center justify-between gap-3
+                       bg-gray-800 border border-gray-700 rounded-lg
+                       px-4 py-2.5 text-left group hover:border-gray-500 transition-colors">
+          <span id="dd-label" class="text-sm font-medium text-gray-100 truncate">Loading…</span>
+          <svg id="dd-chevron" class="w-4 h-4 shrink-0 text-gray-500 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+
+        <!-- Dropdown list -->
+        <ul id="dd-list"
+            class="hidden absolute z-50 mt-1 w-full bg-gray-800 border border-gray-700
+                   rounded-xl shadow-2xl overflow-hidden py-1">
+        </ul>
+      </div>
+
+      <!-- Device dropdown -->
+      <div class="relative min-w-[160px]" id="dev-wrapper">
+        <button type="button" id="dev-trigger" onclick="toggleDeviceDropdown()"
+                class="w-full flex items-center justify-between gap-3
+                       bg-gray-800 border border-gray-700 rounded-lg
+                       px-4 py-2.5 text-left hover:border-gray-500 transition-colors">
+          <span id="dev-label" class="text-sm font-medium text-gray-100 truncate">Loading…</span>
+          <svg id="dev-chevron" class="w-4 h-4 shrink-0 text-gray-500 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+        <ul id="dev-list"
+            class="hidden absolute z-50 mt-1 w-full min-w-[200px] bg-gray-800 border border-gray-700
+                   rounded-xl shadow-2xl overflow-hidden py-1 right-0">
+        </ul>
+      </div>
+
+      <button id="start-btn" onclick="startQueue()"
+              class="shrink-0 bg-spotify text-black font-semibold text-sm tracking-wide
+                     px-6 py-2.5 rounded-full hover:bg-spotify/90 transition-colors
+                     disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+        Start rolling queue
+      </button>
+    </div>
+    <div id="start-status" class="text-xs mt-3 hidden" style="color:#6b7280"></div>
+  </div>
+
+  <!-- Effective vibe target card -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6" id="target-card">
+    <div class="flex items-center justify-between mb-4 gap-4 flex-wrap">
+      <div>
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-gray-400 mb-0.5">
+          Moving vibe target
+        </h2>
+        <p class="text-xs text-gray-600" id="drift-label">—</p>
+      </div>
+      <div class="text-xs text-gray-500" id="time-bucket-label">—</div>
+    </div>
+    <div class="space-y-6" id="target-axes"></div>
+
+    <!-- Retarget controls — shown once sliders are adjusted -->
+    <div id="retarget-bar" class="hidden mt-6 pt-5 border-t border-gray-800 flex items-center gap-4 flex-wrap">
+      <div class="flex-1 text-sm">
+        <span id="fit-count" class="font-semibold text-white">—</span>
+        <span class="text-gray-500 ml-1">songs fit this target</span>
+      </div>
+      <button id="retarget-btn" onclick="applyRetarget()"
+              class="shrink-0 bg-spotify text-black font-semibold text-sm px-5 py-2
+                     rounded-full hover:bg-spotify/90 transition-colors
+                     disabled:opacity-40 disabled:cursor-not-allowed">
+        Flush &amp; regenerate
+      </button>
+      <button onclick="resetTarget()"
+              class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+        Reset
+      </button>
+      <div id="retarget-status" class="text-xs w-full hidden" style="color:#6b7280"></div>
+    </div>
+  </div>
+
+  <!-- Song list -->
+  <div id="song-list" class="space-y-2"></div>
+
+  <!-- Empty / error state -->
+  <div id="queue-error" class="hidden text-center py-16 text-gray-600">
+    <div class="text-4xl mb-4">🎵</div>
+    <div class="text-sm" id="queue-error-msg">No active rolling session found.</div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Label helpers ────────────────────────────────────────────────────────────
+
+const CONTENT_LABELS = [
+  [-1.0, "deeply introspective"],
+  [-0.6, "reflective"],
+  [-0.2, "balanced"],
+  [ 0.2, "assertive"],
+  [ 0.6, "aggressive"],
+];
+const MELODIC_LABELS = [
+  [-1.0, "fully sung"],
+  [-0.6, "mostly melodic"],
+  [-0.2, "mixed"],
+  [ 0.2, "rap-leaning"],
+  [ 0.6, "pure rap"],
+];
+const BPM_LABELS = [
+  [-1.0, "very slow"],
+  [-0.6, "slow"],
+  [-0.2, "mid-tempo"],
+  [ 0.2, "uptempo"],
+  [ 0.6, "fast"],
+];
+
+function labelFor(val, table) {
+  let out = table[table.length - 1][1];
+  for (const [thresh, lbl] of table) {
+    if (val <= thresh + 0.2) { out = lbl; break; }
+  }
+  return out;
+}
+
+function axisLabel(axis, val) {
+  if (axis === "content") return labelFor(val, CONTENT_LABELS);
+  if (axis === "melodic") return labelFor(val, MELODIC_LABELS);
+  return labelFor(val, BPM_LABELS);
+}
+
+// ── Axis display names ───────────────────────────────────────────────────────
+const AXIS_NAMES = { content: "Content", melodic: "Melodic", bpm: "BPM" };
+const AXIS_COLORS = { content: "emerald", melodic: "amber", bpm: "indigo" };
+
+const COLOR_MAP = {
+  emerald: { bar: "#10b981", dim: "#064e3b", text: "text-emerald-400" },
+  amber:   { bar: "#f59e0b", dim: "#78350f", text: "text-amber-400"   },
+  indigo:  { bar: "#6366f1", dim: "#312e81", text: "text-indigo-400"  },
+};
+
+// Convert -1..1 value to % on the bar (0..100)
+function valToPct(v) { return Math.round((v + 1) / 2 * 100); }
+
+// Fit score → color: green=good, yellow=ok, red=poor
+function fitColor(fit) {
+  if (fit >= 0.75) return "#10b981";
+  if (fit >= 0.45) return "#f59e0b";
+  return "#ef4444";
+}
+
+// ── Vibe axis bar (used both in target card and per-song) ────────────────────
+function renderAxisBar(axis, songVal, targetVal, baseVal, fitScore) {
+  const c = COLOR_MAP[AXIS_COLORS[axis]];
+  const sPct = valToPct(songVal);
+  const tPct = valToPct(targetVal);
+  const bPct = valToPct(baseVal);
+  const driftPx = Math.abs(tPct - bPct);
+  const showDrift = driftPx >= 1;
+
+  return `
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-xs font-medium ${c.text}">${AXIS_NAMES[axis]}</span>
+        <span class="text-xs text-gray-500">${axisLabel(axis, songVal)}</span>
+      </div>
+      <div class="relative h-3 rounded-full bg-gray-800 overflow-visible">
+        <!-- Track -->
+        <div class="absolute inset-0 rounded-full" style="background:${c.dim};opacity:0.3"></div>
+        ${showDrift ? `
+        <!-- Drift zone between base and effective target -->
+        <div class="absolute top-0 bottom-0 rounded-sm opacity-30"
+             style="background:#6b7280;left:${Math.min(tPct,bPct)}%;width:${driftPx}%"></div>
+        ` : ''}
+        <!-- Base target marker (white tick) -->
+        <div class="absolute top-[-3px] bottom-[-3px] w-0.5 rounded-full bg-white/40 z-10"
+             style="left:${bPct}%"></div>
+        <!-- Effective target marker (axis color) -->
+        <div class="absolute top-[-4px] bottom-[-4px] w-1 rounded-full z-20"
+             style="left:${tPct}%;background:${c.bar}"></div>
+        <!-- Song value dot -->
+        <div class="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-gray-900 z-30"
+             style="left:${sPct}%;margin-left:-6px;background:${fitColor(fitScore)}"></div>
+      </div>
+      <div class="flex justify-between text-[10px] text-gray-700 mt-0.5 px-0.5">
+        <span>−1</span><span>0</span><span>+1</span>
+      </div>
+    </div>`;
+}
+
+// ── Target slider (interactive, for the target card) ─────────────────────────
+let _poolVibes    = [];    // [[c,m,b], ...] — all scored songs in the playlist
+let _vibe_sigmas  = {};
+let _draftTarget  = {};    // {content, melodic, bpm} — slider position
+let _baseTarget   = {};    // learned/effective target at load time
+let _axisRange    = {};    // {content:[lo,hi], melodic:[lo,hi], bpm:[lo,hi]}
+const MIN_FIT     = 10;
+const FIT_THRESH  = 0.25;
+
+function gaussFit(val, target, sigma) {
+  return Math.exp(-0.5 * Math.pow(val - target, 2) / Math.pow(sigma, 2));
+}
+
+function avgFit(c, m, b, tgt, sigmas) {
+  const sc = sigmas.content || 0.30, sm = sigmas.melodic || 0.30, sb = sigmas.bpm || 0.30;
+  const gc = gaussFit(c, tgt.content, sc);
+  const dm = m - tgt.melodic;
+  const sm_eff = sm * (dm < 0 ? 1.4 : 0.6);
+  const gm = Math.exp(-0.5 * dm * dm / (sm_eff * sm_eff));
+  const gb = gaussFit(b, tgt.bpm, sb);
+  return (gc + gm + gb) / 3;
+}
+
+function countFitting(tgt) {
+  return _poolVibes.filter(([c, m, b]) => avgFit(c, m, b, tgt, _vibe_sigmas) >= FIT_THRESH).length;
+}
+
+function renderSliderAxis(axis, effectiveVal, baseVal) {
+  const c = COLOR_MAP[AXIS_COLORS[axis]];
+  const bPct = valToPct(baseVal);
+  const delta = effectiveVal - baseVal;
+  const showDrift = Math.abs(delta) >= 0.01;
+
+  return `
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-medium ${c.text}">${AXIS_NAMES[axis]}</span>
+        <span class="text-xs text-gray-400" id="lbl-${axis}">
+          ${axisLabel(axis, effectiveVal)}
+          ${showDrift ? `<span class="ml-1 text-gray-600">(${delta >= 0 ? '+' : ''}${delta.toFixed(2)} drift)</span>` : ''}
+        </span>
+      </div>
+      <!-- Base target ghost tick -->
+      <div class="relative">
+        <div class="absolute top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/20 pointer-events-none z-10"
+             style="left:calc(${bPct}% - 1px)"></div>
+        <input type="range" id="slider-${axis}" class="axis-${axis}"
+               min="-1" max="1" step="0.01" value="${effectiveVal.toFixed(2)}"
+               oninput="onSliderInput('${axis}', parseFloat(this.value))">
+      </div>
+      <div class="flex justify-between text-[10px] text-gray-700 mt-1 px-0.5">
+        <span>${axis === 'content' ? 'introspective' : axis === 'melodic' ? 'sung' : 'slow'}</span>
+        <span>${axis === 'content' ? 'aggressive' : axis === 'melodic' ? 'rap' : 'fast'}</span>
+      </div>
+    </div>`;
+}
+
+// ── Contribution bar chip ────────────────────────────────────────────────────
+function contribChip(label, val) {
+  const pos = val >= 0;
+  const color = pos ? "text-emerald-400" : "text-red-400";
+  const bg    = pos ? "bg-emerald-900/40" : "bg-red-900/40";
+  return `<span class="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded ${bg} ${color}">
+    ${label} <span class="font-semibold">${val >= 0 ? '+' : ''}${val.toFixed(3)}</span>
+  </span>`;
+}
+
+// ── Fit badge ────────────────────────────────────────────────────────────────
+function fitBadge(fit) {
+  if (fit === null || fit === undefined) return '';
+  const pct = Math.round(fit * 100);
+  const color = fit >= 0.75 ? "text-emerald-400 bg-emerald-900/40"
+              : fit >= 0.45 ? "text-amber-400 bg-amber-900/40"
+              :               "text-red-400 bg-red-900/40";
+  return `<span class="text-[11px] px-2 py-0.5 rounded ${color}">vibe ${pct}%</span>`;
+}
+
+// ── Cluster badge ─────────────────────────────────────────────────────────────
+function clusterBadge(label) {
+  if (!label) return '';
+  return `<span class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-400">${label.replace('_', ' ')}</span>`;
+}
+
+// ── Score badge ───────────────────────────────────────────────────────────────
+function scoreBadge(score) {
+  if (score === null || score === undefined) return '';
+  return `<span class="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-spotify font-mono">${score.toFixed(3)}</span>`;
+}
+
+// ── Render one song row ───────────────────────────────────────────────────────
+function renderSong(song, baseTarget, effectiveTarget) {
+  const id = `song-${song.position}`;
+  const vibe_fit = song.vibe_fit || {};
+  const vmatch   = song.vibe_match;
+
+  const axisRows = effectiveTarget
+    ? ["content","melodic","bpm"].map(ax =>
+        renderAxisBar(ax,
+          song.vibe[ax],
+          effectiveTarget[ax],
+          baseTarget ? baseTarget[ax] : effectiveTarget[ax],
+          vibe_fit[ax] || 0)
+      ).join('')
+    : '';
+
+  const contr = song.contributions || {};
+  const contribHtml = [
+    contribChip("vibe",      contr.vibe            || 0),
+    contribChip("fatigue",   contr.fatigue_penalty  || 0),
+    contr.artist_fatigue !== 0 ? contribChip("artist fat.", contr.artist_fatigue || 0) : '',
+    contr.binge_boost   > 0   ? contribChip("binge",       contr.binge_boost    || 0) : '',
+    contr.coverage      > 0   ? contribChip("coverage",    contr.coverage        || 0) : '',
+  ].filter(Boolean).join(' ');
+
+  const detailHtml = `
+    <div id="${id}-detail" class="hidden mt-3 pt-3 border-t border-gray-800 space-y-4">
+      ${axisRows ? `<div class="space-y-3">${axisRows}</div>` : ''}
+      <div>
+        <div class="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Score contributions</div>
+        <div class="flex flex-wrap gap-1.5">${contribHtml}</div>
+        <div class="text-[10px] text-gray-700 mt-2">
+          Fatigue ${song.fatigue.toFixed(2)} · Binge ${song.binge_score.toFixed(2)}
+          · Coverage debt ${song.coverage_debt.toFixed(2)} → bonus ${(song.coverage_bonus * 100).toFixed(0)}%
+        </div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="bg-gray-900 border border-gray-800 rounded-xl px-5 py-4 cursor-pointer hover:border-gray-700 transition-colors"
+         onclick="toggleSong('${id}')">
+      <div class="flex items-start gap-3">
+        <span class="text-gray-700 font-mono text-sm w-5 shrink-0 pt-0.5">${song.position + 1}</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            <span class="font-medium text-white truncate">${song.song_name}</span>
+          </div>
+          <div class="text-sm text-gray-400 truncate mb-2">${song.artist_name}</div>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            ${scoreBadge(song.score)}
+            ${fitBadge(vmatch)}
+            ${clusterBadge(song.cluster_label)}
+          </div>
+        </div>
+        <div class="text-gray-700 text-xs pt-0.5 shrink-0">▾</div>
+      </div>
+      ${detailHtml}
+    </div>`;
+}
+
+function toggleSong(id) {
+  const el = document.getElementById(`${id}-detail`);
+  if (!el) return;
+  el.classList.toggle('hidden');
+  const arrow = el.closest('[onclick]').querySelector('.text-gray-700.text-xs');
+  if (arrow) arrow.textContent = el.classList.contains('hidden') ? '▾' : '▴';
+}
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+async function loadQueue() {
+  const root = document.getElementById('queue-root');
+  try {
+    const res = await fetch('/api/queue');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.error || `Error ${res.status}`);
+      return;
+    }
+    const d = await res.json();
+
+    // Status
+    const enabled = d.enabled;
+    document.getElementById('queue-status').textContent =
+      enabled ? 'rolling queue active' : 'queue paused';
+    document.getElementById('queue-status').style.color =
+      enabled ? '#1DB954' : '#6b7280';
+
+    const refill = d.last_refill_at
+      ? new Date(d.last_refill_at).toLocaleString()
+      : 'unknown';
+    document.getElementById('queue-subtitle').textContent =
+      `${d.playlist_name || 'Unknown playlist'} · last refill ${refill}`;
+
+    // Time bucket
+    const TB_LABELS = { morning: 'Morning', afternoon: 'Afternoon', late_night: 'Late night' };
+    document.getElementById('time-bucket-label').textContent =
+      `${TB_LABELS[d.time_bucket] || d.time_bucket} context · σ ${Object.values(d.vibe_sigmas || {}).map(v=>v.toFixed(2)).join(' / ')}`;
+
+    // Drift label
+    const sess = d.session;
+    if (sess && sess.drift_w > 0) {
+      document.getElementById('drift-label').textContent =
+        `Session drift active — ${sess.n} songs · weight ${(sess.drift_w * 100).toFixed(0)}% toward your actual listening`;
+    } else if (sess) {
+      document.getElementById('drift-label').textContent =
+        `${sess.n} songs so far — drift activates after ${2 - sess.n < 0 ? 0 : 2 - sess.n} more`;
+    } else {
+      document.getElementById('drift-label').textContent = 'No active session — using playlist base target';
+    }
+
+    // Store pool vibes and sigmas for client-side range computation
+    _poolVibes   = d.pool_vibes || [];
+    _vibe_sigmas = d.vibe_sigmas || {};
+
+    // Target card axes (interactive sliders)
+    const axesEl = document.getElementById('target-axes');
+    const base   = d.base_target;
+    const eff    = d.effective_target;
+    if (base && eff) {
+      // Initialise draft from effective target (may include session drift)
+      _baseTarget  = { content: eff.content, melodic: eff.melodic, bpm: eff.bpm };
+      // If a manual override is active, use that as the starting slider position
+      if (d.target_override) {
+        _baseTarget = { ...d.target_override };
+      }
+      _draftTarget = { ..._baseTarget };
+
+      axesEl.innerHTML = ["content","melodic","bpm"]
+        .map(ax => renderSliderAxis(ax, _draftTarget[ax], base[ax]))
+        .join('');
+
+      // Compute valid drag ranges from pool (async-safe: pool already loaded)
+      if (_poolVibes.length) updateSliderLimits();
+    } else {
+      axesEl.innerHTML = '<div class="text-sm text-gray-600">No vibe target found for this playlist.</div>';
+    }
+
+    // Song list
+    const listEl = document.getElementById('song-list');
+    if (!d.songs || d.songs.length === 0) {
+      showError('No songs in the current queue push.');
+      return;
+    }
+    listEl.innerHTML = d.songs.map(s => renderSong(s, base, eff)).join('');
+
+    // Pre-select current source playlist in the dropdown
+    if (d.source_playlist_id && _playlists.length) {
+      const p = _playlists.find(x => x.playlist_id === d.source_playlist_id);
+      if (p) selectPlaylist(p.playlist_id, p.playlist_name, p.n_tracks);
+    }
+
+  } catch (e) {
+    showError('Failed to load queue data.');
+    console.error(e);
+  }
+}
+
+function showError(msg) {
+  document.getElementById('target-card').classList.add('hidden');
+  document.getElementById('song-list').classList.add('hidden');
+  const errEl = document.getElementById('queue-error');
+  errEl.classList.remove('hidden');
+  document.getElementById('queue-error-msg').textContent = msg;
+}
+
+// ── Retarget / slider logic ───────────────────────────────────────────────────
+
+// Find the furthest valid value in one direction for an axis.
+// Clamps: if you drag too far, snap to the last position with >= MIN_FIT songs.
+function clampToValidRange(axis, proposedVal, currentDraft) {
+  const t = { ...currentDraft, [axis]: proposedVal };
+  if (countFitting(t) >= MIN_FIT) return proposedVal;
+
+  // Binary search for the boundary between valid and invalid
+  const direction = proposedVal > currentDraft[axis] ? 1 : -1;
+  const STEP = 0.05;
+  let valid = currentDraft[axis];
+  for (let v = currentDraft[axis] + direction * STEP; ; v += direction * STEP) {
+    const clamped = Math.round(Math.max(-1, Math.min(1, v)) * 100) / 100;
+    const t2 = { ...currentDraft, [axis]: clamped };
+    if (countFitting(t2) >= MIN_FIT) valid = clamped;
+    else break;
+    if (clamped <= -1 || clamped >= 1) break;
+  }
+  return valid;
+}
+
+function computeAxisRanges(draft) {
+  const ranges = {};
+  for (const axis of ['content', 'melodic', 'bpm']) {
+    const STEP = 0.05;
+    let lo = draft[axis], hi = draft[axis];
+    for (let v = draft[axis] - STEP; v >= -1.0; v -= STEP) {
+      const t = { ...draft, [axis]: Math.round(v * 100) / 100 };
+      if (countFitting(t) >= MIN_FIT) lo = t[axis]; else break;
+    }
+    for (let v = draft[axis] + STEP; v <= 1.0; v += STEP) {
+      const t = { ...draft, [axis]: Math.round(v * 100) / 100 };
+      if (countFitting(t) >= MIN_FIT) hi = t[axis]; else break;
+    }
+    ranges[axis] = [Math.round(lo * 100) / 100, Math.round(hi * 100) / 100];
+  }
+  return ranges;
+}
+
+function updateSliderLimits() {
+  if (!_poolVibes.length) return;
+  _axisRange = computeAxisRanges(_draftTarget);
+  for (const axis of ['content', 'melodic', 'bpm']) {
+    const s = document.getElementById(`slider-${axis}`);
+    if (s) { s.min = _axisRange[axis][0]; s.max = _axisRange[axis][1]; }
+  }
+}
+
+function onSliderInput(axis, rawVal) {
+  // Clamp to the furthest position with enough songs
+  const val = _poolVibes.length ? clampToValidRange(axis, rawVal, _draftTarget) : rawVal;
+  _draftTarget[axis] = val;
+
+  // Snap slider visually if clamped
+  const slider = document.getElementById(`slider-${axis}`);
+  if (slider && Math.abs(parseFloat(slider.value) - val) > 0.001) slider.value = val;
+
+  // Update label
+  const lbl = document.getElementById(`lbl-${axis}`);
+  if (lbl) lbl.textContent = axisLabel(axis, val);
+
+  // Update fit count and retarget bar
+  const n     = countFitting(_draftTarget);
+  const countEl = document.getElementById('fit-count');
+  const barEl   = document.getElementById('retarget-bar');
+  const btn     = document.getElementById('retarget-btn');
+  if (countEl) { countEl.textContent = n; countEl.style.color = n >= MIN_FIT ? '#10b981' : '#ef4444'; }
+
+  const isDirty = ['content','melodic','bpm'].some(ax =>
+    Math.abs((_draftTarget[ax] || 0) - (_baseTarget[ax] || 0)) >= 0.03
+  );
+  if (barEl) barEl.classList.toggle('hidden', !isDirty);
+  if (btn) btn.disabled = n < MIN_FIT;
+  const statEl = document.getElementById('retarget-status');
+  if (statEl) statEl.classList.add('hidden');
+}
+
+function resetTarget() {
+  for (const ax of ['content','melodic','bpm']) {
+    _draftTarget[ax] = _baseTarget[ax] ?? 0;
+    const s = document.getElementById(`slider-${ax}`);
+    if (s) { s.value = _draftTarget[ax]; s.min = -1; s.max = 1; s.step = 0.01; }
+    const lbl = document.getElementById(`lbl-${ax}`);
+    if (lbl) lbl.textContent = axisLabel(ax, _draftTarget[ax]);
+  }
+  document.getElementById('retarget-bar').classList.add('hidden');
+  updateSliderLimits();
+}
+
+async function applyRetarget() {
+  const btn    = document.getElementById('retarget-btn');
+  const statEl = document.getElementById('retarget-status');
+  btn.disabled = true;
+  btn.textContent = 'Regenerating…';
+  statEl.textContent = 'Flushing queue and regenerating with new target…';
+  statEl.style.color = '#6b7280';
+  statEl.classList.remove('hidden');
+
+  try {
+    const res  = await fetch('/api/queue/retarget', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_draftTarget),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statEl.textContent = data.error || `Error ${res.status}`;
+      statEl.style.color = '#ef4444';
+      btn.disabled = false;
+      btn.textContent = 'Flush & regenerate';
+    } else {
+      statEl.textContent = 'Playing new target. Refreshing…';
+      statEl.style.color = '#1DB954';
+      btn.textContent = 'Applied';
+      document.getElementById('song-list').innerHTML =
+        '<div class="text-sm text-gray-600 py-8 text-center">Loading new queue…</div>';
+      _baseTarget = { ..._draftTarget };
+      document.getElementById('retarget-bar').classList.add('hidden');
+      loadQueue();
+    }
+  } catch (e) {
+    statEl.textContent = 'Network error';
+    statEl.style.color = '#ef4444';
+    btn.disabled = false;
+    btn.textContent = 'Flush & regenerate';
+  }
+}
+
+// ── Custom dropdown ───────────────────────────────────────────────────────────
+let _playlists  = [];
+let _selectedId = null;
+
+function toggleDropdown() {
+  const list    = document.getElementById('dd-list');
+  const chevron = document.getElementById('dd-chevron');
+  const open    = !list.classList.contains('hidden');
+  list.classList.toggle('hidden', open);
+  chevron.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+function selectPlaylist(id, name, tracks) {
+  _selectedId = id;
+  document.getElementById('dd-label').textContent = `${name}`;
+  document.getElementById('dd-list').classList.add('hidden');
+  document.getElementById('dd-chevron').style.transform = '';
+
+  // Rebuild list to update active highlight
+  renderDropdownItems();
+}
+
+function renderDropdownItems() {
+  const list = document.getElementById('dd-list');
+  list.innerHTML = _playlists.map(p => {
+    const active = p.playlist_id === _selectedId;
+    return `
+      <li onclick="selectPlaylist('${p.playlist_id}', ${JSON.stringify(p.playlist_name)}, ${p.n_tracks})"
+          class="flex items-center justify-between px-4 py-3 cursor-pointer
+                 transition-colors ${active ? 'bg-gray-700/60' : 'hover:bg-gray-700/40'}">
+        <span class="text-sm font-medium ${active ? 'text-white' : 'text-gray-200'}">${p.playlist_name}</span>
+        <span class="text-xs ml-4 shrink-0 ${active ? 'text-spotify' : 'text-gray-500'}">${p.n_tracks} tracks</span>
+      </li>`;
+  }).join('');
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', e => {
+  if (!document.getElementById('dd-wrapper')?.contains(e.target)) {
+    document.getElementById('dd-list')?.classList.add('hidden');
+    document.getElementById('dd-chevron').style.transform = '';
+  }
+  if (!document.getElementById('dev-wrapper')?.contains(e.target)) {
+    document.getElementById('dev-list')?.classList.add('hidden');
+    document.getElementById('dev-chevron').style.transform = '';
+  }
+});
+
+// ── Device dropdown ───────────────────────────────────────────────────────────
+let _devices    = [];
+let _selectedDev = null;  // {device_id, name, type}
+
+const DEV_ICONS = { Computer: '💻', Smartphone: '📱', Speaker: '🔊', TV: '📺' };
+
+function toggleDeviceDropdown() {
+  const list    = document.getElementById('dev-list');
+  const chevron = document.getElementById('dev-chevron');
+  const open    = !list.classList.contains('hidden');
+  list.classList.toggle('hidden', open);
+  chevron.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+function selectDevice(id, name, type) {
+  _selectedDev = { device_id: id, name, type };
+  const icon = DEV_ICONS[type] || '🎵';
+  document.getElementById('dev-label').textContent = `${icon} ${name}`;
+  document.getElementById('dev-list').classList.add('hidden');
+  document.getElementById('dev-chevron').style.transform = '';
+  renderDeviceItems();
+}
+
+function renderDeviceItems() {
+  const list = document.getElementById('dev-list');
+  if (!_devices.length) {
+    list.innerHTML = `<li class="px-4 py-3 text-sm text-gray-500">No devices found — open Spotify first</li>`;
+    return;
+  }
+  list.innerHTML = _devices.map(d => {
+    const active = _selectedDev && d.device_id === _selectedDev.device_id;
+    const icon   = DEV_ICONS[d.type] || '🎵';
+    return `
+      <li onclick="selectDevice('${d.device_id}', ${JSON.stringify(d.name)}, '${d.type}')"
+          class="flex items-center justify-between px-4 py-3 cursor-pointer
+                 transition-colors ${active ? 'bg-gray-700/60' : 'hover:bg-gray-700/40'}">
+        <span class="text-sm font-medium ${active ? 'text-white' : 'text-gray-200'}">${icon} ${d.name}</span>
+        ${d.is_active ? `<span class="text-xs text-spotify ml-3 shrink-0">active</span>` : ''}
+      </li>`;
+  }).join('');
+}
+
+async function loadDevices() {
+  try {
+    const res = await fetch('/api/queue/devices');
+    _devices  = await res.json();
+    if (!Array.isArray(_devices)) { _devices = []; }
+    // Auto-select active device, or first
+    const active = _devices.find(d => d.is_active) || _devices[0];
+    if (active) selectDevice(active.device_id, active.name, active.type);
+    else {
+      document.getElementById('dev-label').textContent = 'No devices';
+      renderDeviceItems();
+    }
+  } catch (e) {
+    document.getElementById('dev-label').textContent = 'Error loading';
+  }
+}
+
+async function loadPlaylists() {
+  try {
+    const res = await fetch('/api/queue/playlists');
+    _playlists = await res.json();
+    if (_playlists.length) {
+      selectPlaylist(_playlists[0].playlist_id, _playlists[0].playlist_name, _playlists[0].n_tracks);
+    } else {
+      document.getElementById('dd-label').textContent = 'No playlists found';
+    }
+    renderDropdownItems();
+  } catch (e) {
+    document.getElementById('dd-label').textContent = 'Failed to load';
+  }
+}
+
+// ── Start queue ───────────────────────────────────────────────────────────────
+async function startQueue() {
+  const btn  = document.getElementById('start-btn');
+  const stat = document.getElementById('start-status');
+  const plId = _selectedId;
+  if (!plId) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Generating queue…';
+  stat.textContent = 'Running recommend.py — this takes ~15 seconds…';
+  stat.classList.remove('hidden');
+
+  try {
+    const res = await fetch('/api/queue/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playlist_id: plId, device_id: _selectedDev?.device_id || '' }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      stat.textContent = `Error: ${data.error || res.status}${data.detail ? ' — ' + data.detail.slice(-200) : ''}`;
+      stat.style.color = '#ef4444';
+    } else {
+      stat.textContent = 'Playing. Refreshing queue…';
+      stat.style.color = '#1DB954';
+      btn.textContent = 'Started';
+      document.getElementById('song-list').innerHTML =
+        '<div class="text-sm text-gray-600 py-8 text-center">Loading new queue…</div>';
+      loadQueue();
+    }
+  } catch (e) {
+    stat.textContent = 'Network error — is the server running?';
+    stat.style.color = '#ef4444';
+  } finally {
+    if (btn.textContent === 'Generating queue…') {
+      btn.textContent = 'Start rolling queue';
+    }
+    btn.disabled = false;
+  }
+}
+
+loadPlaylists();
+loadDevices();
+loadQueue();
+</script>
+{% endblock %}

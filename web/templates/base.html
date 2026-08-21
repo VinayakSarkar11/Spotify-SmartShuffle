@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SmartShuffle{% endblock %}</title>
+
+  <!-- Tailwind (CDN play build — fine for local/demo, no build step needed) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { spotify: '#1DB954' },
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* Tailwind doesn't ship a dark background by default — set it explicitly */
+    body { background-color: #030712; }
+    /* Subtle scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    /* Vibe sliders */
+    input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 24px; background: transparent; outline: none; cursor: pointer; display: block; }
+    input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 22px; border-radius: 2px; border: none; cursor: grab; transition: width .1s; margin-top: -9px; }
+    input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; width: 6px; }
+    input[type=range].axis-content::-webkit-slider-runnable-track { background: linear-gradient(to right, #064e3b, #10b981); }
+    input[type=range].axis-content::-webkit-slider-thumb { background: #10b981; }
+    input[type=range].axis-melodic::-webkit-slider-runnable-track { background: linear-gradient(to right, #78350f, #f59e0b); }
+    input[type=range].axis-melodic::-webkit-slider-thumb { background: #f59e0b; }
+    input[type=range].axis-bpm::-webkit-slider-runnable-track { background: linear-gradient(to right, #312e81, #6366f1); }
+    input[type=range].axis-bpm::-webkit-slider-thumb { background: #6366f1; }
+  </style>
+</head>
+
+<body class="font-sans text-gray-100 min-h-screen">
+
+  <!-- Nav -->
+  <nav class="sticky top-0 z-10 border-b border-gray-800 bg-gray-950/80 backdrop-blur px-6 py-4">
+    <div class="max-w-6xl mx-auto flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 group">
+        <svg class="w-5 h-5 text-spotify" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+        </svg>
+        <span class="font-semibold text-white">SmartShuffle</span>
+      </a>
+
+      <div class="flex items-center gap-6 text-sm text-gray-400">
+        <a href="/" class="hover:text-white transition-colors">Home</a>
+        <a href="/dashboard" class="hover:text-white transition-colors">Dashboard</a>
+        <a href="/queue" class="hover:text-white transition-colors">Live Queue</a>
+        <a href="https://github.com/VinayakSarkar11/Spotify-SmartShuffle"
+           target="_blank" rel="noopener"
+           class="hover:text-white transition-colors">GitHub ↗</a>
+        {% if request.session.get("user_id") %}
+        <form action="/logout" method="post" class="inline">
+          <button type="submit" class="hover:text-white transition-colors">Log out</button>
+        </form>
+        {% else %}
+        <a href="/login" class="text-spotify hover:text-spotify/80 transition-colors font-medium">Log in</a>
+        {% endif %}
+      </div>
+    </div>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  <!-- Footer -->
+  <footer class="border-t border-gray-800 mt-16 px-6 py-8 text-center text-xs text-gray-600">
+    <p>
+      Music data from
+      <a href="https://spotify.com" class="text-spotify/70 hover:text-spotify transition-colors">Spotify</a>
+    </p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

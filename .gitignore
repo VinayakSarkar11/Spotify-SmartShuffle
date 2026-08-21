@@ -5,6 +5,8 @@
 
 # Database (personal listening data)
 data/smartshuffle.db
+data/auth.db
+data/users/
 data/watcher.pid
 data/rolling_queue_state.json
 data/session_state.json
@@ -24,3 +26,6 @@ logs/*.log
 # IDE
 .vscode/
 .idea/
+
+# Web compiled
+web/__pycache__/
