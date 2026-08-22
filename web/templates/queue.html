@@ -249,10 +249,10 @@ function renderSliderAxis(axis, effectiveVal, baseVal) {
         <span class="text-xs font-medium ${c.text}">${AXIS_NAMES[axis]}</span>
         <span class="text-xs text-gray-400" id="lbl-${axis}">
           ${axisLabel(axis, effectiveVal)}
-          ${showDrift ? `<span class="ml-1 text-gray-600">(${delta >= 0 ? '+' : ''}${delta.toFixed(2)} drift)</span>` : ''}
+          ${showDrift ? `<span class="ml-1 text-gray-600">(${delta >= 0 ? '+' : ''}${delta.toFixed(2)} from session)</span>` : ''}
         </span>
       </div>
-      <!-- Base target ghost tick -->
+      <!-- Session target ghost tick — visible when user has dragged away from it -->
       <div class="relative">
         <div class="absolute top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/20 pointer-events-none z-10"
              style="left:calc(${bPct}% - 1px)"></div>
@@ -427,7 +427,7 @@ async function loadQueue() {
       _draftTarget = { ..._baseTarget };
 
       axesEl.innerHTML = ["content","melodic","bpm"]
-        .map(ax => renderSliderAxis(ax, _draftTarget[ax], base[ax]))
+        .map(ax => renderSliderAxis(ax, _draftTarget[ax], eff[ax]))
         .join('');
 
       // Compute valid drag ranges from pool (async-safe: pool already loaded)
