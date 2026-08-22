@@ -254,7 +254,7 @@ async def admin_upload_db(request: Request):
     body = await request.body()
     if not body:
         return JSONResponse({"error": "Empty body"}, status_code=400)
-    if request.headers.get("Content-Encoding") == "gzip":
+    if body[:2] == b'\x1f\x8b':  # gzip magic bytes
         body = _gzip.decompress(body)
     db_path = os.path.join(ROOT, "data", "smartshuffle.db")
     tmp_path = db_path + ".upload.tmp"
