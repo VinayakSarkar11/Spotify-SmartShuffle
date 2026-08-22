@@ -897,7 +897,6 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
                 last_remaining = None
                 continue
 
-    _clear_state()
     print("  [watcher] stopped")
 
 

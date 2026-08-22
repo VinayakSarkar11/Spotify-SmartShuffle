@@ -1382,11 +1382,15 @@ def generate_queue(df: pd.DataFrame, context: str,
         # Combined vibe-match floor: exclude songs whose (gc+gm+gb)/3 < _VIBE_MATCH_MIN.
         # Catches songs mediocre on all axes that each pass the per-axis epsilon wall.
         # Released automatically if no qualifying candidates remain (same pattern as above).
-        if effective_vibe is not None and "vibe_content" in pool.columns:
+        # Use stable session target (target_vibe) not the within-queue drifted effective_vibe —
+        # within-queue smoothing drift must not widen the gate below the 75% floor. In trajectory
+        # mode the per-position target IS intentional, so effective_vibe is used there.
+        _floor_vibe = effective_vibe if velocity_step is not None else target_vibe
+        if _floor_vibe is not None and "vibe_content" in pool.columns:
             _vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
-            _gc = np.exp(-0.5 * pool["vibe_content"].sub(effective_vibe["content"]).pow(2) / _vs["content"]**2)
-            _gm = np.exp(-0.5 * pool["vibe_melodic"].sub(effective_vibe["melodic"]).pow(2) / _vs["melodic"]**2)
-            _gb = np.exp(-0.5 * pool["vibe_bpm"].sub(effective_vibe["bpm"]).pow(2)         / _vs["bpm"]**2)
+            _gc = np.exp(-0.5 * pool["vibe_content"].sub(_floor_vibe["content"]).pow(2) / _vs["content"]**2)
+            _gm = np.exp(-0.5 * pool["vibe_melodic"].sub(_floor_vibe["melodic"]).pow(2) / _vs["melodic"]**2)
+            _gb = np.exp(-0.5 * pool["vibe_bpm"].sub(_floor_vibe["bpm"]).pow(2)         / _vs["bpm"]**2)
             _combined = ((_gc + _gm + _gb) / 3.0).where(pool["vibe_content"].notna(), 1.0)
             _in_match = _combined >= _VIBE_MATCH_MIN
             if (_in_match & ~pool["song_id"].isin(effective_used)).any():
