@@ -118,6 +118,21 @@ async def login(request: Request):
     return RedirectResponse(f"https://accounts.spotify.com/authorize?{params}")
 
 
+@app.get("/switch-account")
+async def switch_account(request: Request):
+    state = secrets.token_urlsafe(16)
+    request.session["oauth_state"] = state
+    params = urlencode({
+        "client_id":     os.getenv("SPOTIFY_CLIENT_ID", ""),
+        "response_type": "code",
+        "redirect_uri":  os.getenv("SPOTIFY_REDIRECT_URI", ""),
+        "scope":         SPOTIFY_SCOPES,
+        "state":         state,
+        "show_dialog":   "true",
+    })
+    return RedirectResponse(f"https://accounts.spotify.com/authorize?{params}")
+
+
 @app.get("/callback")
 async def callback(request: Request, code: str = "", state: str = "", error: str = ""):
     if error:
