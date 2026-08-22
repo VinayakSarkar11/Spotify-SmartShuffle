@@ -620,13 +620,18 @@ function renderDropdownItems() {
   list.innerHTML = _playlists.map(p => {
     const active = p.playlist_id === _selectedId;
     return `
-      <li onclick="selectPlaylist('${p.playlist_id}', ${JSON.stringify(p.playlist_name)}, ${p.n_tracks})"
+      <li data-id="${p.playlist_id}" data-name="${p.playlist_name.replace(/"/g,'&quot;')}" data-tracks="${p.n_tracks}"
+          onclick="onPlaylistClick(this)"
           class="flex items-center justify-between px-4 py-3 cursor-pointer
                  transition-colors ${active ? 'bg-gray-700/60' : 'hover:bg-gray-700/40'}">
         <span class="text-sm font-medium ${active ? 'text-white' : 'text-gray-200'}">${p.playlist_name}</span>
         <span class="text-xs ml-4 shrink-0 ${active ? 'text-spotify' : 'text-gray-500'}">${p.n_tracks} tracks</span>
       </li>`;
   }).join('');
+}
+
+function onPlaylistClick(el) {
+  selectPlaylist(el.dataset.id, el.dataset.name, parseInt(el.dataset.tracks));
 }
 
 // Close dropdowns on outside click
