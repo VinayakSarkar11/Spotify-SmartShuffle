@@ -260,26 +260,35 @@ async def health():
     return JSONResponse({k: bool(os.getenv(k)) for k in keys})
 
 
-@app.post("/admin/upload-db")
-async def admin_upload_db(request: Request):
+_ADMIN_ALLOWED_FILES = {
+    "smartshuffle.db", "vibe_params.json", "learned_params.json",
+    "refill_baseline.json",
+}
+
+
+@app.post("/admin/upload-file")
+async def admin_upload_file(request: Request, filename: str):
     import gzip as _gzip
     secret = os.getenv("ADMIN_UPLOAD_SECRET", "")
     if not secret or request.headers.get("X-Admin-Secret") != secret:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if filename not in _ADMIN_ALLOWED_FILES:
+        return JSONResponse({"error": "Filename not allowed"}, status_code=400)
     body = await request.body()
     if not body:
         return JSONResponse({"error": "Empty body"}, status_code=400)
-    if body[:2] == b'\x1f\x8b':  # gzip magic bytes
+    if body[:2] == b'\x1f\x8b':
         body = _gzip.decompress(body)
-    db_path = os.path.join(ROOT, "data", "smartshuffle.db")
-    tmp_path = db_path + ".upload.tmp"
+    dest = os.path.join(ROOT, "data", filename)
+    tmp  = dest + ".upload.tmp"
     try:
-        with open(tmp_path, "wb") as f:
+        with open(tmp, "wb") as f:
             f.write(body)
-        os.replace(tmp_path, db_path)
-        global _global_stats_at
-        _global_stats_at = 0.0  # bust home-screen stats cache
-        return JSONResponse({"ok": True, "bytes": len(body)})
+        os.replace(tmp, dest)
+        if filename == "smartshuffle.db":
+            global _global_stats_at
+            _global_stats_at = 0.0
+        return JSONResponse({"ok": True, "file": filename, "bytes": len(body)})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
