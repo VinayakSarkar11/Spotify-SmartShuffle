@@ -66,6 +66,10 @@
         <form action="/logout" method="post" class="inline">
           <button type="submit" class="hover:text-white transition-colors">Log out</button>
         </form>
+        <form action="/disconnect" method="post" class="inline"
+              onsubmit="return confirm('Delete your account and all listening data? This cannot be undone.')">
+          <button type="submit" class="hover:text-red-400 text-red-500/70 transition-colors text-xs">Delete account</button>
+        </form>
         {% else %}
         <a href="/login" class="text-spotify hover:text-spotify/80 transition-colors font-medium">Log in</a>
         {% endif %}
