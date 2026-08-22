@@ -247,12 +247,15 @@ async def health():
 
 @app.post("/admin/upload-db")
 async def admin_upload_db(request: Request):
+    import gzip as _gzip
     secret = os.getenv("ADMIN_UPLOAD_SECRET", "")
     if not secret or request.headers.get("X-Admin-Secret") != secret:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     body = await request.body()
     if not body:
         return JSONResponse({"error": "Empty body"}, status_code=400)
+    if request.headers.get("Content-Encoding") == "gzip":
+        body = _gzip.decompress(body)
     db_path = os.path.join(ROOT, "data", "smartshuffle.db")
     tmp_path = db_path + ".upload.tmp"
     try:
