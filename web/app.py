@@ -192,14 +192,13 @@ async def disconnect(request: Request, user: dict = Depends(current_user)):
 
 _global_stats_cache: dict = {}
 _global_stats_at: float  = 0.0
-_STATS_TTL = 60 * 60 * 48  # refresh every 48 hours
+_STATS_TTL = 60 * 60  # 1 hour
 
 
 def _global_stats() -> dict:
-    """Aggregate total_plays and unique scored_songs across all user DBs, cached 48 h."""
     import time
     global _global_stats_cache, _global_stats_at
-    if time.time() - _global_stats_at < _STATS_TTL and _global_stats_cache:
+    if time.time() - _global_stats_at < _STATS_TTL and _global_stats_cache.get("total_plays"):
         return _global_stats_cache
 
     db_paths: list[str] = []
@@ -217,16 +216,23 @@ def _global_stats() -> dict:
         scored_ids: set[str] = set()
         for db_path in db_paths:
             conn = sqlite3.connect(db_path)
-            total_plays += conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
-            for (sid,) in conn.execute(
-                "SELECT song_id FROM songs WHERE vibe_content IS NOT NULL"
-            ).fetchall():
-                scored_ids.add(sid)
-            conn.close()
-        _global_stats_cache = {"total_plays": total_plays, "scored_songs": len(scored_ids)}
-        _global_stats_at    = time.time()
+            try:
+                total_plays += conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+                for (sid,) in conn.execute(
+                    "SELECT song_id FROM songs WHERE vibe_content IS NOT NULL"
+                ).fetchall():
+                    scored_ids.add(sid)
+            except sqlite3.OperationalError:
+                pass  # DB exists but schema not yet initialised
+            finally:
+                conn.close()
+        if total_plays > 0 or scored_ids:
+            _global_stats_cache = {"total_plays": total_plays, "scored_songs": len(scored_ids)}
+            _global_stats_at    = time.time()
+        else:
+            return {"total_plays": None, "scored_songs": None}
     except Exception:
-        _global_stats_cache = {"total_plays": None, "scored_songs": None}
+        return {"total_plays": None, "scored_songs": None}
 
     return _global_stats_cache
 
@@ -253,6 +259,8 @@ async def admin_upload_db(request: Request):
         with open(tmp_path, "wb") as f:
             f.write(body)
         os.replace(tmp_path, db_path)
+        global _global_stats_at
+        _global_stats_at = 0.0  # bust home-screen stats cache
         return JSONResponse({"ok": True, "bytes": len(body)})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -300,6 +308,15 @@ async def api_stats(user: dict = Depends(current_user)):
     user_id      = user["user_id"]
     conn         = _db(user_id)
     vibe_targets = _load_vibe_targets()
+
+    try:
+        conn.execute("SELECT 1 FROM plays LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        return JSONResponse({"summary": {"total_plays": 0, "scored_songs": 0,
+                                         "rolling_sessions": 0, "avg_session_songs": None},
+                             "rolling_skip_rate": None, "qs_n": 0, "plays_n": 0,
+                             "trend": [], "vibe_dists": {}, "history": []})
 
     total_plays  = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     scored_songs = conn.execute(
