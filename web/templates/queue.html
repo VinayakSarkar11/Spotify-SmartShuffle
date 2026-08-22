@@ -239,7 +239,9 @@ function countFitting(tgt) {
 
 function renderSliderAxis(axis, effectiveVal, baseVal) {
   const c = COLOR_MAP[AXIS_COLORS[axis]];
-  const bPct = valToPct(baseVal);
+  // Round baseVal to the same 2dp the slider uses so the tick aligns with the thumb exactly.
+  const bRounded = parseFloat(baseVal.toFixed(2));
+  const bPct = (bRounded + 1) / 2 * 100;   // float %, matches browser thumb math
   const delta = effectiveVal - baseVal;
   const showDrift = Math.abs(delta) >= 0.01;
 
@@ -255,7 +257,7 @@ function renderSliderAxis(axis, effectiveVal, baseVal) {
       <!-- Session target ghost tick — visible when user has dragged away from it -->
       <div class="relative">
         <div class="absolute top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/20 pointer-events-none z-10"
-             style="left:calc(${bPct}% - 1px)"></div>
+             style="left:calc(${bPct.toFixed(2)}% - 1px)"></div>
         <input type="range" id="slider-${axis}" class="axis-${axis}"
                min="-1" max="1" step="0.01" value="${effectiveVal.toFixed(2)}"
                oninput="onSliderInput('${axis}', parseFloat(this.value))">
@@ -420,8 +422,9 @@ async function loadQueue() {
     if (base && eff) {
       // Initialise draft from effective target (may include session drift)
       _baseTarget  = { content: eff.content, melodic: eff.melodic, bpm: eff.bpm };
-      // If a manual override is active, use that as the starting slider position
-      if (d.target_override) {
+      // Manual override only applies when there's an active session — otherwise
+      // the queue was replanned and the override is stale.
+      if (d.target_override && d.session) {
         _baseTarget = { ...d.target_override };
       }
       _draftTarget = { ..._baseTarget };
