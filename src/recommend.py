@@ -1389,7 +1389,9 @@ def generate_queue(df: pd.DataFrame, context: str,
         if _floor_vibe is not None and "vibe_content" in pool.columns:
             _vs = vibe_sigmas or {"content": sigma, "melodic": sigma, "bpm": sigma}
             _gc = np.exp(-0.5 * pool["vibe_content"].sub(_floor_vibe["content"]).pow(2) / _vs["content"]**2)
-            _gm = np.exp(-0.5 * pool["vibe_melodic"].sub(_floor_vibe["melodic"]).pow(2) / _vs["melodic"]**2)
+            _dm_f = pool["vibe_melodic"].sub(_floor_vibe["melodic"])
+            _sm_f = _vs["melodic"] * np.where(_dm_f < 0, _MELODIC_ASYM[0], _MELODIC_ASYM[1])
+            _gm = np.exp(-0.5 * _dm_f.pow(2) / (_sm_f ** 2))
             _gb = np.exp(-0.5 * pool["vibe_bpm"].sub(_floor_vibe["bpm"]).pow(2)         / _vs["bpm"]**2)
             _combined = ((_gc + _gm + _gb) / 3.0).where(pool["vibe_content"].notna(), 1.0)
             _in_match = _combined >= _VIBE_MATCH_MIN
