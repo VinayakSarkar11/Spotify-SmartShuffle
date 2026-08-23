@@ -95,12 +95,15 @@ def _make_sp():
     token = os.getenv("SS_ACCESS_TOKEN")
     if token:
         return spotipy.Spotify(auth=token)
+    # SS_TOKEN_CACHE_PATH: written by the web app before spawning the watcher so
+    # SpotifyOAuth can auto-refresh without an interactive flow (needed on Railway).
+    cache_path = os.getenv("SS_TOKEN_CACHE_PATH") or os.path.join(DIR, ".spotify_cache")
     return spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=os.getenv("SPOTIFY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI"),
         scope=SCOPE,
-        cache_path=os.path.join(DIR, ".spotify_cache"),
+        cache_path=cache_path,
     ))
 
 

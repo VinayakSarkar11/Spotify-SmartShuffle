@@ -23,7 +23,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 from auth import (
     current_user, delete_user, get_access_token, get_user_paths,
     spotify_for_user, upsert_user, validate_device_id, validate_playlist_id,
-    SPOTIFY_SCOPES,
+    write_spotipy_cache, SPOTIFY_SCOPES,
 )
 
 DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -59,13 +59,16 @@ def _sp(user_id: str):
 
 def _subprocess_env(user_id: str) -> dict:
     """Build env for subprocess calls: inject user's access token and paths."""
-    paths = get_user_paths(user_id)
+    paths      = get_user_paths(user_id)
+    cache_path = os.path.join(os.path.dirname(paths["db"]), "sp_watcher_cache.json")
+    write_spotipy_cache(user_id, cache_path)
     return {
         **os.environ,
-        "SS_ACCESS_TOKEN":   get_access_token(user_id),
-        "SS_DB_PATH":        paths["db"],
-        "SS_ROLLING_STATE":  paths["rolling_state"],
-        "SS_SESSION_STATE":  paths["session_state"],
+        "SS_ACCESS_TOKEN":    get_access_token(user_id),
+        "SS_DB_PATH":         paths["db"],
+        "SS_ROLLING_STATE":   paths["rolling_state"],
+        "SS_SESSION_STATE":   paths["session_state"],
+        "SS_TOKEN_CACHE_PATH": cache_path,
     }
 
 

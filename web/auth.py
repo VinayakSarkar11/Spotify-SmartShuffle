@@ -221,6 +221,39 @@ def spotify_for_user(user_id: str):
     return spotipy.Spotify(auth=get_access_token(user_id))
 
 
+def write_spotipy_cache(user_id: str, cache_path: str) -> None:
+    """Write a SpotifyOAuth-format token cache so the watcher can auto-refresh.
+
+    The watcher subprocess strips SS_ACCESS_TOKEN (short-lived) and falls back
+    to SpotifyOAuth; it needs a cache file with the refresh_token so it can
+    obtain new access tokens without an interactive OAuth flow.
+    """
+    import json, time as _time
+    conn = _auth_conn()
+    row  = conn.execute(
+        "SELECT encrypted_access_token, encrypted_refresh_token, token_expires_at, token_scope "
+        "FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return
+    expires_at = datetime.fromisoformat(row["token_expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    cache = {
+        "access_token":  decrypt_token(row["encrypted_access_token"]),
+        "token_type":    "Bearer",
+        "expires_in":    3600,
+        "refresh_token": decrypt_token(row["encrypted_refresh_token"]),
+        "scope":         row["token_scope"] or "",
+        "expires_at":    expires_at.timestamp(),
+    }
+    tmp = cache_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f)
+    os.replace(tmp, cache_path)
+
+
 # ── FastAPI session dependency ────────────────────────────────────────────────
 
 def current_user(request: Request) -> dict:
