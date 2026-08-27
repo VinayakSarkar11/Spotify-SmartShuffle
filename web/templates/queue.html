@@ -424,7 +424,7 @@ async function loadQueue() {
       _baseTarget  = { content: eff.content, melodic: eff.melodic, bpm: eff.bpm };
       // Manual override only applies when there's an active session — otherwise
       // the queue was replanned and the override is stale.
-      if (d.target_override && d.session) {
+      if (d.target_override) {
         _baseTarget = { ...d.target_override };
       }
       _draftTarget = { ..._baseTarget };
@@ -739,7 +739,15 @@ async function startQueue() {
     const res = await fetch('/api/queue/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playlist_id: plId, device_id: _selectedDev?.device_id || '' }),
+      body: JSON.stringify({
+        playlist_id: plId,
+        device_id: _selectedDev?.device_id || '',
+        // Only send a manual target when the user moved the sliders
+        ...(['content','melodic','bpm'].some(ax =>
+              Math.abs((_draftTarget[ax] || 0) - (_baseTarget[ax] || 0)) >= 0.03)
+          ? { vibe_target: _draftTarget }
+          : {}),
+      }),
     });
     const data = await res.json();
 

@@ -673,7 +673,7 @@ async def api_queue(user: dict = Depends(current_user)):
     except (FileNotFoundError, json.JSONDecodeError):
         vp = {}
 
-    vibe_sigmas = vp.get("vibe_sigmas", {}).get(tb, {"content": 0.30, "melodic": 0.30, "bpm": 0.30})
+    _vibe_sigmas_baseline = vp.get("vibe_sigmas", {}).get(tb, {"content": 0.30, "melodic": 0.30, "bpm": 0.30})
     base_target = _load_vibe_targets().get(source_pl_id)
 
     lp_path = os.path.join(ROOT, "data", "learned_params.json")
@@ -685,13 +685,21 @@ async def api_queue(user: dict = Depends(current_user)):
 
     effective_target = base_target
     session_info     = None
+    recent_skip_rate = 0.0
     if base_target:
         try:
             with open(paths["session_state"]) as f:
                 state = json.load(f)
             effective_target, session_info = _compute_drift(base_target, state, tb)
+            if state.get("time_bucket") == tb and int(state.get("plays_seen", 0)) >= 3:
+                recent_skip_rate = float(state.get("recent_skip_rate", 0.0))
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+
+    # Match the sigma tightening recommend.py applies so displayed vibe scores agree with the floor.
+    _sigma_mult = max(0.0, min(1.0, (recent_skip_rate - 0.30) / (0.80 - 0.30)))
+    _sigma_mult = round(1.0 - (1.0 - 0.50) * _sigma_mult, 3)
+    vibe_sigmas = {ax: round(v * _sigma_mult, 4) for ax, v in _vibe_sigmas_baseline.items()}
 
     conn          = _db(user_id)
     songs_out     = []
@@ -897,6 +905,7 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
     body        = await request.json()
     playlist_id = (body.get("playlist_id") or "").strip()
     device_id   = (body.get("device_id")   or "").strip()
+    vibe_target = body.get("vibe_target")   # optional {content, melodic, bpm}
 
     if not playlist_id:
         return JSONResponse({"error": "playlist_id required"}, status_code=400)
@@ -906,12 +915,19 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
     src_dir = os.path.join(ROOT, "src")
     env     = _subprocess_env(user_id)
 
+    rec_cmd = [sys.executable, os.path.join(src_dir, "recommend.py"),
+               "--playlist", playlist_id, "--count", "10"]
+    if vibe_target:
+        try:
+            c = float(vibe_target["content"])
+            m = float(vibe_target["melodic"])
+            b = float(vibe_target["bpm"])
+            rec_cmd += ["--target", f"{c},{m},{b}"]
+        except (KeyError, TypeError, ValueError):
+            pass
+
     try:
-        r1 = subprocess.run(
-            [sys.executable, os.path.join(src_dir, "recommend.py"),
-             "--playlist", playlist_id, "--count", "10"],
-            capture_output=True, text=True, timeout=120, cwd=ROOT, env=env,
-        )
+        r1 = subprocess.run(rec_cmd, capture_output=True, text=True, timeout=120, cwd=ROOT, env=env)
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "recommend.py timed out"}, status_code=500)
     if r1.returncode != 0:
@@ -926,5 +942,24 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
         return JSONResponse({"error": "push.py timed out"}, status_code=500)
     if r2.returncode != 0:
         return JSONResponse({"error": "Spotify push failed"}, status_code=500)
+
+    # Persist or clear target_override in rolling state.
+    paths    = get_user_paths(user_id)
+    rqs_path = paths["rolling_state"]
+    try:
+        with open(rqs_path) as f:
+            rqs = json.load(f)
+        if vibe_target:
+            rqs["target_override"] = {"content": float(vibe_target["content"]),
+                                      "melodic": float(vibe_target["melodic"]),
+                                      "bpm":     float(vibe_target["bpm"])}
+        else:
+            rqs.pop("target_override", None)
+        tmp = rqs_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rqs, f)
+        os.replace(tmp, rqs_path)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+        pass
 
     return JSONResponse({"ok": True, "stdout": r2.stdout[-1000:]})
