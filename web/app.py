@@ -699,6 +699,13 @@ async def api_queue(user: dict = Depends(current_user)):
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
+    # If the user dragged sliders to a custom target, score songs against that
+    # target — not the learned/drifted one — so displayed vibe % reflects what
+    # the recommender actually optimised for.
+    target_override = rqs.get("target_override")
+    if target_override:
+        effective_target = target_override
+
     # Match the sigma tightening recommend.py applies so displayed vibe scores agree with the floor.
     _sigma_mult = max(0.0, min(1.0, (recent_skip_rate - 0.30) / (0.80 - 0.30)))
     _sigma_mult = round(1.0 - (1.0 - 0.50) * _sigma_mult, 3)
