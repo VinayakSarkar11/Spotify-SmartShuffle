@@ -590,17 +590,20 @@ def _song_explanations(songs: list, effective_target: dict | None,
         vc, vm, vb = s.get("vibe_content"), s.get("vibe_melodic"), s.get("vibe_bpm")
 
         vibe_fit = vibe_match = None
+        fatigue        = float(s.get("fatigue", 0))
+        binge_score    = float(s.get("binge_score", 0))
         if effective_target and vc is not None and vm is not None and vb is not None:
-            sc, sm, sb = vibe_sigmas["content"], vibe_sigmas["melodic"], vibe_sigmas["bpm"]
+            # Mirror recommend.py: binge songs are scored with widened sigmas.
+            _binge_mult = 1.0 + max(float(binge_score), 0.0) * 0.50
+            sc = vibe_sigmas["content"]  * _binge_mult
+            sm = vibe_sigmas["melodic"]  * _binge_mult
+            sb = vibe_sigmas["bpm"]      * _binge_mult
             gc = math.exp(-0.5 * (vc - effective_target["content"])**2 / sc**2)
             dm = vm - effective_target["melodic"]
             gm = math.exp(-0.5 * dm**2 / (sm * (_MELODIC_ASYM[0] if dm < 0 else _MELODIC_ASYM[1]))**2)
             gb = math.exp(-0.5 * (vb - effective_target["bpm"])**2 / sb**2)
             vibe_fit   = {"content": round(gc, 3), "melodic": round(gm, 3), "bpm": round(gb, 3)}
             vibe_match = round((gc + gm + gb) / 3.0, 3)
-
-        fatigue        = float(s.get("fatigue", 0))
-        binge_score    = float(s.get("binge_score", 0))
         art_fatigue    = float(s.get("artist_fatigue", 0))
         coverage_debt  = float(s.get("coverage_debt", 0))
         coverage_bonus = min(coverage_debt / 4.0, 1.0)
@@ -711,7 +714,9 @@ async def api_queue(user: dict = Depends(current_user)):
                 SELECT qp.pushed_at, q.songs
                 FROM queue_pushes qp
                 JOIN queues q ON q.queue_id = qp.queue_id
-                WHERE qp.push_id = ?
+                WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
+                ORDER BY qp.push_id DESC
+                LIMIT 1
             """, (session_push_id,)).fetchone()
             if row:
                 push_at   = row["pushed_at"]
