@@ -221,6 +221,7 @@ _EPSILON_LOOSE        = 2.50   # epsilon in drift direction
 _VELOCITY_MIN_MAG     = 0.05   # ignore velocities smaller than this
 _VEL_DOT_THRESHOLD    = 0.05   # dot-product threshold for Case 2 (overshoot) detection
 _VIBE_MATCH_MIN       = 0.75   # combined (gc+gm+gb)/3 must reach this — blocks songs mediocre on all axes
+_SAME_DAY_EXCLUDE_H   = 8.0    # songs played within this many hours are hard-excluded
 # Asymmetric melodic sigma: vibe_melodic < 0 = melodic; moving above target (less melodic) is harsher.
 # (mult_below_target = loose, mult_above_target = tight)
 _MELODIC_ASYM         = (1.4, 0.6)
@@ -1620,6 +1621,18 @@ def main():
         print(f"  {len(df)} songs ({len(exclude_ids)} excluded)")
     else:
         print(f"  {len(df)} songs")
+
+    # Hard-exclude songs played within _SAME_DAY_EXCLUDE_H hours — prevents
+    # cross-session same-day repeats. Falls back if fewer than 20 songs remain.
+    if "last_played" in df.columns:
+        _now_ts    = pd.Timestamp.now(tz="UTC")
+        _lp_dt     = pd.to_datetime(df["last_played"], utc=True, errors="coerce")
+        _hrs_ago   = (_now_ts - _lp_dt).dt.total_seconds() / 3600
+        _too_recent = _hrs_ago < _SAME_DAY_EXCLUDE_H
+        _n_recent   = int(_too_recent.sum())
+        if _n_recent and len(df) - _n_recent >= 20:
+            df = df[~_too_recent]
+            print(f"  {_n_recent} songs skipped (played within {_SAME_DAY_EXCLUDE_H:.0f}h)")
 
     if args.algorithm == "random_baseline":
         baseline = generate_random_baseline(df, n=args.count)

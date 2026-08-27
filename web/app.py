@@ -786,6 +786,8 @@ async def api_queue_playlists(user: dict = Depends(current_user)):
     except (FileNotFoundError, json.JSONDecodeError):
         scored_ids = set()
 
+    vibe_targets = _load_vibe_targets()
+
     conn = _db(user["user_id"])
     rows = conn.execute("""
         SELECT p.playlist_id, TRIM(p.playlist_name) AS playlist_name,
@@ -800,7 +802,12 @@ async def api_queue_playlists(user: dict = Depends(current_user)):
 
     excluded_names = {"smartshuffle queue"}
     return JSONResponse([
-        {"playlist_id": r["playlist_id"], "playlist_name": r["playlist_name"], "n_tracks": r["n_tracks"]}
+        {
+            "playlist_id":   r["playlist_id"],
+            "playlist_name": r["playlist_name"],
+            "n_tracks":      r["n_tracks"],
+            "vibe_target":   vibe_targets.get(r["playlist_id"]),
+        }
         for r in rows
         if r["playlist_id"] in scored_ids
         and r["playlist_name"].lower() not in excluded_names

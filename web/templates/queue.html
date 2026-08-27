@@ -215,6 +215,7 @@ let _poolVibes    = [];    // [[c,m,b], ...] — all scored songs in the playlis
 let _vibe_sigmas  = {};
 let _draftTarget  = {};    // {content, melodic, bpm} — slider position
 let _baseTarget   = {};    // learned/effective target at load time
+let _sessionLoaded = false; // true once loadQueue() has shown an active session
 let _axisRange    = {};    // {content:[lo,hi], melodic:[lo,hi], bpm:[lo,hi]}
 const MIN_FIT     = 10;
 const FIT_THRESH  = 0.25;
@@ -375,6 +376,7 @@ async function loadQueue() {
   try {
     const res = await fetch('/api/queue');
     if (!res.ok) {
+      _sessionLoaded = false;
       const err = await res.json().catch(() => ({}));
       showError(err.error || `Error ${res.status}`);
       return;
@@ -420,6 +422,7 @@ async function loadQueue() {
     const base   = d.base_target;
     const eff    = d.effective_target;
     if (base && eff) {
+      _sessionLoaded = true;
       // Initialise draft from effective target (may include session drift)
       _baseTarget  = { content: eff.content, melodic: eff.melodic, bpm: eff.bpm };
       // Manual override only applies when there's an active session — otherwise
@@ -616,6 +619,21 @@ function selectPlaylist(id, name, tracks) {
 
   // Rebuild list to update active highlight
   renderDropdownItems();
+
+  // Pre-populate sliders from the playlist's learned target so the user can
+  // adjust them before hitting Start — only when no active session is loaded.
+  const pl = _playlists.find(p => p.playlist_id === id);
+  if (pl?.vibe_target && !_sessionLoaded) {
+    _baseTarget  = { ...pl.vibe_target };
+    _draftTarget = { ...pl.vibe_target };
+    const axesEl = document.getElementById('target-axes');
+    if (axesEl) {
+      axesEl.innerHTML = ['content','melodic','bpm']
+        .map(ax => renderSliderAxis(ax, _draftTarget[ax], pl.vibe_target[ax]))
+        .join('');
+      if (_poolVibes.length) updateSliderLimits();
+    }
+  }
 }
 
 function renderDropdownItems() {
