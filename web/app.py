@@ -927,6 +927,18 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
     src_dir = os.path.join(ROOT, "src")
     env     = _subprocess_env(user_id)
 
+    # Clear stale session state so recommend.py starts fresh with no carry-over
+    # drift from the previous session — otherwise the floor target is shifted and
+    # songs that barely pass the old drifted floor appear below 75% on display.
+    paths = get_user_paths(user_id)
+    try:
+        tmp = paths["session_state"] + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({}, f)
+        os.replace(tmp, paths["session_state"])
+    except OSError:
+        pass
+
     rec_cmd = [sys.executable, os.path.join(src_dir, "recommend.py"),
                "--playlist", playlist_id, "--count", "10"]
     if vibe_target:
