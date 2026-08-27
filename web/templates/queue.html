@@ -577,7 +577,7 @@ async function applyRetarget() {
     });
     const data = await res.json();
     if (!res.ok) {
-      statEl.textContent = data.error || `Error ${res.status}`;
+      statEl.textContent = (data.error || `Error ${res.status}`) + (data.detail ? ` — ${data.detail.slice(-300)}` : '');
       statEl.style.color = '#ef4444';
       btn.disabled = false;
       btn.textContent = 'Flush & regenerate';

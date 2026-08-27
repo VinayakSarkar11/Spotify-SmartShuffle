@@ -903,7 +903,8 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "recommend.py timed out"}, status_code=500)
     if r1.returncode != 0:
-        return JSONResponse({"error": "Queue generation failed"}, status_code=500)
+        return JSONResponse({"error": "Queue generation failed",
+                             "detail": (r1.stdout + r1.stderr)[-2000:]}, status_code=500)
 
     push_cmd = [sys.executable, os.path.join(src_dir, "push.py"), "--rolling"]
     if device_id and validate_device_id(device_id):
@@ -913,7 +914,8 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "push.py timed out"}, status_code=500)
     if r2.returncode != 0:
-        return JSONResponse({"error": "Spotify push failed"}, status_code=500)
+        return JSONResponse({"error": "Spotify push failed",
+                             "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
 
     return JSONResponse({"ok": True, "fitting_songs": fitting, "target": new_target})
 
