@@ -255,6 +255,30 @@ def _global_stats() -> dict:
     return _global_stats_cache
 
 
+@app.post("/api/collect")
+async def api_collect(user: dict = Depends(current_user)):
+    """Run collect.py to sync recent plays and attribute them to queues."""
+    src_dir = os.path.join(ROOT, "src")
+    env     = _subprocess_env(user["user_id"])
+    try:
+        r = subprocess.run(
+            [sys.executable, os.path.join(src_dir, "collect.py")],
+            capture_output=True, text=True, timeout=60, cwd=ROOT, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "collect.py timed out"}, status_code=500)
+    if r.returncode != 0:
+        return JSONResponse({"error": "collect failed",
+                             "detail": (r.stdout + r.stderr)[-1000:]}, status_code=500)
+    # Pull updated play count to return
+    conn = _db(user["user_id"])
+    try:
+        total_plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "total_plays": total_plays})
+
+
 @app.get("/health")
 async def health():
     keys = ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_OWNER_ID",

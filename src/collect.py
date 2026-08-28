@@ -20,13 +20,22 @@ SCOPE = " ".join([
     "user-read-playback-state",     # needed by play.py
 ])
 
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id=os.getenv("SPOTIFY_CLIENT_ID"),
-    client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
-    redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI"),
-    scope=SCOPE,
-    cache_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".spotify_cache")
-))
+def _make_sp():
+    token = os.getenv("SS_ACCESS_TOKEN")
+    if token:
+        return spotipy.Spotify(auth=token)
+    cache_path = os.getenv("SS_TOKEN_CACHE_PATH") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), ".spotify_cache"
+    )
+    return spotipy.Spotify(auth_manager=SpotifyOAuth(
+        client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+        client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
+        redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI"),
+        scope=SCOPE,
+        cache_path=cache_path,
+    ))
+
+sp = _make_sp()
 
 # ── Database setup ───────────────────────────────────────────────────────────
 
@@ -1041,7 +1050,9 @@ def purge_old_plays(conn, days: int = 90) -> int:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "smartshuffle.db"))
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _db_path = os.getenv("SS_DB_PATH") or os.path.join(_root, "data", "smartshuffle.db")
+    conn = sqlite3.connect(_db_path)
     init_db(conn)
 
     print("=== SmartShuffle Data Collection ===")

@@ -776,6 +776,16 @@ def _check_refill(
 
     rolling["last_refill_at"] = now
     _write_rolling_state(rolling)
+
+    # Sync plays so dashboard/stats stay current after each refill.
+    try:
+        subprocess.run(
+            [sys.executable, os.path.join(DIR, "src", "collect.py")],
+            capture_output=True, timeout=45,
+        )
+    except Exception as _ce:
+        print(f"  [watcher] collect.py sync failed (non-fatal): {_ce}", flush=True)
+
     return remaining
 
 
