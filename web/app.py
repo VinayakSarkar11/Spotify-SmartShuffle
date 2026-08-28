@@ -716,7 +716,12 @@ async def api_queue(user: dict = Depends(current_user)):
     playlist_name = None
     push_at       = None
     try:
+        push_count = 0
         if session_push_id:
+            push_count = (conn.execute("""
+                SELECT COUNT(*) FROM queue_pushes
+                WHERE COALESCE(rolling_session_id, push_id) = ?
+            """, (session_push_id,)).fetchone() or [0])[0]
             row = conn.execute("""
                 SELECT qp.pushed_at, q.songs
                 FROM queue_pushes qp
@@ -760,6 +765,7 @@ async def api_queue(user: dict = Depends(current_user)):
         "playlist_id":        playlist_id,
         "source_playlist_id": source_pl_id,
         "session_push_id":    session_push_id,
+        "push_count":         push_count,
         "time_bucket":        tb,
         "base_target":        base_target,
         "session":            session_info,
@@ -918,6 +924,81 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
                              "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
 
     return JSONResponse({"ok": True, "fitting_songs": fitting, "target": new_target})
+
+
+@app.post("/api/queue/resume")
+async def api_queue_resume(request: Request, user: dict = Depends(current_user)):
+    """Add 10 more songs to the current session and restart the watcher."""
+    user_id = user["user_id"]
+    body    = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+
+    paths    = get_user_paths(user_id)
+    rqs_path = paths["rolling_state"]
+    try:
+        with open(rqs_path) as f:
+            rqs = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return JSONResponse({"error": "No active rolling session"}, status_code=404)
+
+    source_pl_id = rqs.get("source_playlist_id")
+    if not validate_playlist_id(source_pl_id or ""):
+        return JSONResponse({"error": "Invalid playlist ID in rolling state"}, status_code=400)
+
+    src_dir = os.path.join(ROOT, "src")
+    env     = _subprocess_env(user_id)
+
+    # Build exclude list from all songs ever generated in this session
+    session_push_id = rqs.get("session_push_id")
+    exclude_ids: list[str] = []
+    if session_push_id:
+        conn = _db(user_id)
+        try:
+            rows = conn.execute("""
+                SELECT q.songs FROM queue_pushes qp
+                JOIN queues q ON q.queue_id = qp.queue_id
+                WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
+            """, (session_push_id,)).fetchall()
+            for r in rows:
+                for s in json.loads(r["songs"]):
+                    exclude_ids.append(s["song_id"])
+        finally:
+            conn.close()
+
+    rec_cmd = [sys.executable, os.path.join(src_dir, "recommend.py"),
+               "--playlist", source_pl_id, "--count", "10"]
+    if exclude_ids:
+        rec_cmd += ["--exclude", ",".join(dict.fromkeys(exclude_ids))]
+    target_override = rqs.get("target_override")
+    if target_override:
+        try:
+            rec_cmd += ["--target",
+                        f"{float(target_override['content'])},"
+                        f"{float(target_override['melodic'])},"
+                        f"{float(target_override['bpm'])}"]
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    try:
+        r1 = subprocess.run(rec_cmd, capture_output=True, text=True, timeout=120, cwd=ROOT, env=env)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "recommend.py timed out"}, status_code=500)
+    if r1.returncode != 0:
+        return JSONResponse({"error": "Queue generation failed",
+                             "detail": (r1.stdout + r1.stderr)[-2000:]}, status_code=500)
+
+    push_cmd = [sys.executable, os.path.join(src_dir, "push.py"), "--rolling"]
+    if device_id and validate_device_id(device_id):
+        push_cmd += ["--device-id", device_id]
+    try:
+        r2 = subprocess.run(push_cmd, capture_output=True, text=True, timeout=60, cwd=ROOT, env=env)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "push.py timed out"}, status_code=500)
+    if r2.returncode != 0:
+        return JSONResponse({"error": "Spotify push failed",
+                             "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
+
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/queue/start")

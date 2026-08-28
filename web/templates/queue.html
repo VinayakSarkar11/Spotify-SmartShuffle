@@ -56,12 +56,24 @@
         </ul>
       </div>
 
-      <button id="start-btn" onclick="startQueue()"
-              class="shrink-0 bg-spotify text-black font-semibold text-sm tracking-wide
-                     px-6 py-2.5 rounded-full hover:bg-spotify/90 transition-colors
-                     disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-        Start rolling queue
-      </button>
+      <div class="flex gap-2 shrink-0">
+        <button id="resume-btn" onclick="resumeQueue()" hidden
+                class="bg-gray-700 text-white font-semibold text-sm tracking-wide
+                       px-5 py-2.5 rounded-full hover:bg-gray-600 transition-colors
+                       disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+          Resume queue
+        </button>
+        <button id="refresh-btn" onclick="loadQueue()" hidden
+                class="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-2">
+          ↻ Refresh
+        </button>
+        <button id="start-btn" onclick="startQueue()"
+                class="bg-spotify text-black font-semibold text-sm tracking-wide
+                       px-6 py-2.5 rounded-full hover:bg-spotify/90 transition-colors
+                       disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+          Start rolling queue
+        </button>
+      </div>
     </div>
     <div id="start-status" class="text-xs mt-3 hidden" style="color:#6b7280"></div>
   </div>
@@ -386,9 +398,13 @@ async function loadQueue() {
     // Status
     const enabled = d.enabled;
     document.getElementById('queue-status').textContent =
-      enabled ? 'rolling queue active' : 'queue paused';
+      enabled ? `rolling queue active · batch ${d.push_count || 1}` : 'queue paused';
     document.getElementById('queue-status').style.color =
       enabled ? '#1DB954' : '#6b7280';
+
+    // Show resume when session exists but watcher isn't active; always show refresh
+    document.getElementById('resume-btn').hidden = enabled || !d.session_push_id;
+    document.getElementById('refresh-btn').hidden = !d.session_push_id;
 
     const refill = d.last_refill_at
       ? new Date(d.last_refill_at).toLocaleString()
@@ -787,6 +803,38 @@ async function startQueue() {
     if (btn.textContent === 'Generating queue…') {
       btn.textContent = 'Start rolling queue';
     }
+    btn.disabled = false;
+  }
+}
+
+async function resumeQueue() {
+  const btn  = document.getElementById('resume-btn');
+  const stat = document.getElementById('start-status');
+  btn.disabled = true;
+  btn.textContent = 'Resuming…';
+  stat.textContent = 'Generating 10 more songs…';
+  stat.classList.remove('hidden');
+  try {
+    const res = await fetch('/api/queue/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: _selectedDev?.device_id || '' }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      stat.textContent = `Error: ${data.error || res.status}${data.detail ? ' — ' + data.detail.slice(-200) : ''}`;
+      stat.style.color = '#ef4444';
+    } else {
+      stat.textContent = 'Resumed. Refreshing…';
+      stat.style.color = '#1DB954';
+      btn.textContent = 'Resumed';
+      loadQueue();
+    }
+  } catch (e) {
+    stat.textContent = 'Network error';
+    stat.style.color = '#ef4444';
+  } finally {
+    if (btn.textContent === 'Resuming…') btn.textContent = 'Resume queue';
     btn.disabled = false;
   }
 }

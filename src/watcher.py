@@ -761,13 +761,18 @@ def _check_refill(
     # can stitch all batches into one full queue.
     now = datetime.now(timezone.utc).isoformat()
     session_push_id = rolling.get("session_push_id")
-    conn2 = sqlite3.connect(DB_PATH)
-    conn2.execute("""
-        INSERT INTO queue_pushes (queue_id, algorithm, pushed_at, mode, rolling_session_id)
-        VALUES (?, ?, ?, 'rolling', ?)
-    """, (refill_queue_id, algorithm, now, session_push_id))
-    conn2.commit()
-    conn2.close()
+    try:
+        conn2 = sqlite3.connect(DB_PATH)
+        conn2.execute("""
+            INSERT INTO queue_pushes (queue_id, algorithm, pushed_at, mode, rolling_session_id)
+            VALUES (?, ?, ?, 'rolling', ?)
+        """, (refill_queue_id, algorithm, now, session_push_id))
+        conn2.commit()
+        conn2.close()
+        print(f"  [watcher] refill push recorded  queue_id={refill_queue_id}"
+              f"  session_push_id={session_push_id}", flush=True)
+    except Exception as _e:
+        print(f"  [watcher] ERROR recording refill push: {_e}", flush=True)
 
     rolling["last_refill_at"] = now
     _write_rolling_state(rolling)
