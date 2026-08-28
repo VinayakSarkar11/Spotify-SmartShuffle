@@ -623,7 +623,7 @@ function selectPlaylist(id, name, tracks) {
   // Pre-populate sliders from the playlist's learned target so the user can
   // adjust them before hitting Start — only when no active session is loaded.
   const pl = _playlists.find(p => p.playlist_id === id);
-  if (pl?.vibe_target && !_sessionLoaded) {
+  if (pl?.vibe_target) {
     _baseTarget  = { ...pl.vibe_target };
     _draftTarget = { ...pl.vibe_target };
     const axesEl = document.getElementById('target-axes');
