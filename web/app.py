@@ -263,7 +263,7 @@ async def api_collect(user: dict = Depends(current_user)):
     try:
         r = subprocess.run(
             [sys.executable, os.path.join(src_dir, "collect.py")],
-            capture_output=True, text=True, timeout=60, cwd=ROOT, env=env,
+            capture_output=True, text=True, timeout=120, cwd=ROOT, env=env,
         )
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "collect.py timed out"}, status_code=500)
@@ -276,6 +276,8 @@ async def api_collect(user: dict = Depends(current_user)):
         total_plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     finally:
         conn.close()
+    global _global_stats_at
+    _global_stats_at = 0.0  # bust home-page cache so index shows fresh counts
     return JSONResponse({"ok": True, "total_plays": total_plays})
 
 
@@ -370,7 +372,7 @@ async def api_stats(user: dict = Depends(current_user)):
         return JSONResponse({"summary": {"total_plays": 0, "scored_songs": 0,
                                          "rolling_sessions": 0, "avg_session_songs": None},
                              "rolling_skip_rate": None, "qs_n": 0, "plays_n": 0,
-                             "trend": [], "vibe_dists": {}, "history": []})
+                             "trend": [], "vibe_dists": {"vibe_content": [], "vibe_melodic": [], "vibe_bpm": []}, "history": []})
 
     total_plays  = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     scored_songs = conn.execute(

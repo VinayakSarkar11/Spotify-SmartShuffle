@@ -781,7 +781,7 @@ def _check_refill(
     try:
         subprocess.run(
             [sys.executable, os.path.join(DIR, "src", "collect.py")],
-            capture_output=True, timeout=45,
+            capture_output=True, timeout=90,
         )
     except Exception as _ce:
         print(f"  [watcher] collect.py sync failed (non-fatal): {_ce}", flush=True)

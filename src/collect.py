@@ -762,7 +762,6 @@ def attribute_plays_to_queues(conn):
             SELECT qp.push_id, qp.queue_id, qp.algorithm, qp.pushed_at, q.songs
             FROM queue_pushes qp
             JOIN queues q ON qp.queue_id = q.queue_id
-            WHERE qp.pushed_at > datetime('now', '-24 hours')
             ORDER BY qp.pushed_at DESC
         """).fetchall()
     except Exception:
