@@ -815,6 +815,7 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
     last_remaining:    int | None = None  # for adaptive interval decisions
     standby:           bool       = False
     standby_since:     float      = 0.0
+    last_collect_at:   float      = 0.0
 
     while True:
         rolling = _read_rolling_state()
@@ -904,6 +905,22 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
                 session_state=read_session_state(),
                 vibe_map=vibe_map,
             )
+
+        # Periodic play sync — keep DB current so plays aren't lost between sessions.
+        # Spotify returns max 50 recent tracks; without frequent syncing, older plays
+        # fall off the API window and are permanently lost.
+        if time.time() - last_collect_at > 600:
+            try:
+                subprocess.Popen(
+                    [sys.executable, os.path.join(DIR, "src", "collect.py"), "--plays-only"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                last_collect_at = time.time()
+                print("  [watcher] triggered periodic collect.py", flush=True)
+            except Exception as _ce:
+                print(f"  [watcher] periodic collect.py failed (non-fatal): {_ce}", flush=True)
 
         # Enter standby after 10 min of no plays
         if plays:

@@ -386,7 +386,7 @@ function toggleSong(id) {
 async function loadQueue() {
   const root = document.getElementById('queue-root');
   try {
-    const res = await fetch('/api/queue');
+    const res = await fetch(`/api/queue?local_hour=${new Date().getHours()}`);
     if (!res.ok) {
       _sessionLoaded = false;
       const err = await res.json().catch(() => ({}));
@@ -775,6 +775,7 @@ async function startQueue() {
       body: JSON.stringify({
         playlist_id: plId,
         device_id: _selectedDev?.device_id || '',
+        local_hour: new Date().getHours(),
         // Only send a manual target when the user moved the sliders
         ...(['content','melodic','bpm'].some(ax =>
               Math.abs((_draftTarget[ax] || 0) - (_baseTarget[ax] || 0)) >= 0.03)
@@ -817,7 +818,7 @@ async function resumeQueue() {
     const res = await fetch('/api/queue/resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: _selectedDev?.device_id || '' }),
+      body: JSON.stringify({ device_id: _selectedDev?.device_id || '', local_hour: new Date().getHours() }),
     });
     const data = await res.json();
     if (!res.ok) {

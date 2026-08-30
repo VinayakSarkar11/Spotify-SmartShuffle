@@ -617,8 +617,8 @@ _SESSION_VIBE_RECENCY_W    = 0.85
 _MELODIC_ASYM              = (1.4, 0.6)
 
 
-def _time_bucket() -> str:
-    h = datetime.now().hour
+def _time_bucket(local_hour: int | None = None) -> str:
+    h = local_hour if local_hour is not None else datetime.now(timezone.utc).hour
     if h >= 21 or h < 6: return "late_night"
     if h < 11: return "morning"
     return "afternoon"
@@ -725,9 +725,13 @@ def _song_explanations(songs: list, effective_target: dict | None,
 # ── API: queue ────────────────────────────────────────────────────────────────
 
 @app.get("/api/queue")
-async def api_queue(user: dict = Depends(current_user)):
+async def api_queue(request: Request, user: dict = Depends(current_user)):
     user_id = user["user_id"]
     paths   = get_user_paths(user_id)
+    try:
+        local_hour: int | None = int(request.query_params["local_hour"])
+    except (KeyError, ValueError):
+        local_hour = None
 
     rqs_path = paths["rolling_state"]
     try:
@@ -742,7 +746,7 @@ async def api_queue(user: dict = Depends(current_user)):
     session_push_id = rqs.get("session_push_id")
     last_refill_at  = rqs.get("last_refill_at")
 
-    tb = _time_bucket()
+    tb = _time_bucket(local_hour)
 
     vp_path = os.path.join(ROOT, "data", "vibe_params.json")
     try:
@@ -1007,6 +1011,10 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
     user_id = user["user_id"]
     body    = await request.json()
     device_id = (body.get("device_id") or "").strip()
+    try:
+        local_hour: int | None = int(body["local_hour"])
+    except (KeyError, TypeError, ValueError):
+        local_hour = None
 
     paths    = get_user_paths(user_id)
     rqs_path = paths["rolling_state"]
@@ -1022,6 +1030,7 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
 
     src_dir = os.path.join(ROOT, "src")
     env     = _subprocess_env(user_id)
+    env["SS_TIME_BUCKET"] = _time_bucket(local_hour)
 
     # Build exclude list from all songs ever generated in this session
     session_push_id = rqs.get("session_push_id")
@@ -1082,6 +1091,10 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
     playlist_id = (body.get("playlist_id") or "").strip()
     device_id   = (body.get("device_id")   or "").strip()
     vibe_target = body.get("vibe_target")   # optional {content, melodic, bpm}
+    try:
+        local_hour: int | None = int(body["local_hour"])
+    except (KeyError, TypeError, ValueError):
+        local_hour = None
 
     if not playlist_id:
         return JSONResponse({"error": "playlist_id required"}, status_code=400)
@@ -1090,6 +1103,7 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
 
     src_dir = os.path.join(ROOT, "src")
     env     = _subprocess_env(user_id)
+    env["SS_TIME_BUCKET"] = _time_bucket(local_hour)
 
     # Clear stale session state so recommend.py starts fresh with no carry-over
     # drift from the previous session — otherwise the floor target is shifted and

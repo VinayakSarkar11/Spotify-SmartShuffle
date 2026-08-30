@@ -470,8 +470,12 @@ def _start_watcher():
     # The short-lived injected token would cause refills to silently fail after 1 h.
     watcher_env = os.environ.copy()
     watcher_env.pop("SS_ACCESS_TOKEN", None)
+    watcher_cmd = [sys.executable, "-u", os.path.join(DIR, "src", "watcher.py")]
+    bucket = watcher_env.get("SS_TIME_BUCKET")
+    if bucket:
+        watcher_cmd += ["--bucket", bucket]
     proc = subprocess.Popen(
-        [sys.executable, "-u", os.path.join(DIR, "src", "watcher.py")],
+        watcher_cmd,
         start_new_session=True,
         stdout=open(log_path, "a"),
         stderr=subprocess.STDOUT,
