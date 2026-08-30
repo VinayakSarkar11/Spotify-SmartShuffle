@@ -8,7 +8,8 @@ import secrets
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from dotenv import load_dotenv
@@ -225,6 +226,25 @@ _global_stats_cache: dict = {}
 _global_stats_at: float  = 0.0
 _STATS_TTL = 60 * 60  # 1 hour
 
+_last_auto_collect: dict[str, float] = {}  # user_id → epoch of last background collect
+
+
+def _collect_in_background(user_id: str) -> None:
+    """Fire-and-forget collect.py — called after the 2-hour attribution window closes."""
+    try:
+        env = _subprocess_env(user_id)
+        subprocess.Popen(
+            [sys.executable, os.path.join(ROOT, "src", "collect.py")],
+            cwd=ROOT, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _last_auto_collect[user_id] = time.time()
+        global _global_stats_at
+        _global_stats_at = 0.0
+    except Exception:
+        pass
+
 
 def _global_stats() -> dict:
     import time
@@ -377,6 +397,22 @@ async def api_stats(user: dict = Depends(current_user)):
     user_id      = user["user_id"]
     conn         = _db(user_id)
     vibe_targets = _load_vibe_targets()
+
+    # Auto-collect if the session closed 2-24h ago and we haven't synced recently.
+    # Runs fire-and-forget so it doesn't block the stats response.
+    try:
+        paths = get_user_paths(user_id)
+        with open(paths["rolling_state"]) as _f:
+            _rqs = json.load(_f)
+        _last_refill = _rqs.get("last_refill_at")
+        if _last_refill:
+            _hrs = (datetime.now(timezone.utc)
+                    - datetime.fromisoformat(_last_refill)).total_seconds() / 3600
+            _last_ac = _last_auto_collect.get(user_id, 0)
+            if 2.0 <= _hrs <= 24.0 and time.time() - _last_ac > 1800:
+                _collect_in_background(user_id)
+    except Exception:
+        pass
 
     try:
         conn.execute("SELECT 1 FROM plays LIMIT 1")

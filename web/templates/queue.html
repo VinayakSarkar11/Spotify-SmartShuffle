@@ -61,11 +61,7 @@
                 class="bg-gray-700 text-white font-semibold text-sm tracking-wide
                        px-5 py-2.5 rounded-full hover:bg-gray-600 transition-colors
                        disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-          Resume queue
-        </button>
-        <button id="refresh-btn" onclick="loadQueue()" hidden
-                class="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-2">
-          ↻ Refresh
+          + 10 songs
         </button>
         <button id="start-btn" onclick="startQueue()"
                 class="bg-spotify text-black font-semibold text-sm tracking-wide
@@ -402,9 +398,8 @@ async function loadQueue() {
     document.getElementById('queue-status').style.color =
       enabled ? '#1DB954' : '#6b7280';
 
-    // Show resume when session exists but watcher isn't active; always show refresh
-    document.getElementById('resume-btn').hidden = enabled || !d.session_push_id;
-    document.getElementById('refresh-btn').hidden = !d.session_push_id;
+    // Show "+ 10 songs" whenever a session exists (dead or alive watcher)
+    document.getElementById('resume-btn').hidden = !d.session_push_id;
 
     const refill = d.last_refill_at
       ? new Date(d.last_refill_at).toLocaleString()

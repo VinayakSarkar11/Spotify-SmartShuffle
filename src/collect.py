@@ -597,15 +597,17 @@ def analyze_queue_session(conn, push_id: int, algorithm: str, pushed_at: str, so
     queue_set  = set(queue_ids)
     queue_pos  = {sid: i for i, sid in enumerate(queue_ids)}
 
-    # Energy scores for context calculation
+    # Energy scores for context calculation (song_tags may not exist on all deployments)
+    energy_map = {}
     if queue_ids:
-        ph = ",".join("?" * len(queue_ids))
-        energy_map = dict(conn.execute(
-            f"SELECT song_id, energy_score FROM song_tags WHERE song_id IN ({ph})",
-            queue_ids,
-        ).fetchall())
-    else:
-        energy_map = {}
+        try:
+            ph = ",".join("?" * len(queue_ids))
+            energy_map = dict(conn.execute(
+                f"SELECT song_id, energy_score FROM song_tags WHERE song_id IN ({ph})",
+                queue_ids,
+            ).fetchall())
+        except sqlite3.OperationalError:
+            pass
 
     # URI of our managed push playlist — plays from other playlists are context switches.
     push_playlist_row = conn.execute("SELECT value FROM config WHERE key='push_playlist_id'").fetchone()

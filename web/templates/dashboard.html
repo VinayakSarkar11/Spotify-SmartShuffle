@@ -452,7 +452,8 @@ async function syncPlays() {
     const res  = await fetch('/api/collect', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = `Error: ${data.error || res.status}`;
+      const detail = data.detail ? ` — ${data.detail.slice(0, 200)}` : '';
+      status.textContent = `Error: ${data.error || res.status}${detail}`;
       status.style.color = '#ef4444';
     } else {
       status.textContent = `Synced · ${data.total_plays.toLocaleString()} plays`;
