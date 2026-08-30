@@ -57,6 +57,19 @@ def _sp(user_id: str):
     return spotify_for_user(user_id)
 
 
+def _is_watcher_alive(user_id: str) -> bool:
+    """Return True only if the watcher process recorded in watcher.pid is still running."""
+    paths    = get_user_paths(user_id)
+    pid_path = os.path.join(os.path.dirname(paths["db"]), "watcher.pid")
+    try:
+        with open(pid_path) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)   # signal 0: raises if process doesn't exist
+        return True
+    except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+        return False
+
+
 def _subprocess_env(user_id: str) -> dict:
     """Build env for subprocess calls: inject user's access token and paths."""
     paths      = get_user_paths(user_id)
@@ -687,7 +700,7 @@ async def api_queue(user: dict = Depends(current_user)):
     except (FileNotFoundError, json.JSONDecodeError):
         return JSONResponse({"error": "No rolling queue state found"}, status_code=404)
 
-    enabled         = rqs.get("enabled", False)
+    enabled         = rqs.get("enabled", False) and _is_watcher_alive(user_id)
     playlist_id     = rqs.get("playlist_id")
     source_pl_id    = rqs.get("source_playlist_id")
     session_push_id = rqs.get("session_push_id")
