@@ -240,6 +240,9 @@ def append(queue_id: int | None = None, algorithm: str | None = None):
     conn.commit()
     conn.close()
 
+    rqs["last_refill_at"] = now_iso
+    _write_rolling_state(rqs)
+
     _start_watcher()
     print("Watcher restarted.")
 

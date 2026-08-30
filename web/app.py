@@ -801,17 +801,18 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
                 SELECT COUNT(*) FROM queue_pushes
                 WHERE COALESCE(rolling_session_id, push_id) = ?
             """, (session_push_id,)).fetchone() or [0])[0]
-            row = conn.execute("""
+            rows = conn.execute("""
                 SELECT qp.pushed_at, q.songs
                 FROM queue_pushes qp
                 JOIN queues q ON q.queue_id = qp.queue_id
                 WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
-                ORDER BY qp.push_id DESC
-                LIMIT 1
-            """, (session_push_id,)).fetchone()
-            if row:
-                push_at   = row["pushed_at"]
-                raw_songs = json.loads(row["songs"])
+                ORDER BY qp.push_id ASC
+            """, (session_push_id,)).fetchall()
+            if rows:
+                push_at   = rows[-1]["pushed_at"]
+                raw_songs = []
+                for row in rows:
+                    raw_songs.extend(json.loads(row["songs"]))
                 songs_out = _song_explanations(raw_songs, effective_target, vibe_sigmas, weights)
 
         if source_pl_id:
