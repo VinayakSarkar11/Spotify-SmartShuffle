@@ -1062,15 +1062,14 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
         return JSONResponse({"error": "Queue generation failed",
                              "detail": (r1.stdout + r1.stderr)[-2000:]}, status_code=500)
 
-    push_cmd = [sys.executable, os.path.join(src_dir, "push.py"), "--rolling"]
-    if device_id and validate_device_id(device_id):
-        push_cmd += ["--device-id", device_id]
+    # Append to the existing playlist without touching playback or replacing the queue.
+    push_cmd = [sys.executable, os.path.join(src_dir, "push.py"), "--append"]
     try:
         r2 = subprocess.run(push_cmd, capture_output=True, text=True, timeout=60, cwd=ROOT, env=env)
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "push.py timed out"}, status_code=500)
     if r2.returncode != 0:
-        return JSONResponse({"error": "Spotify push failed",
+        return JSONResponse({"error": "Append failed",
                              "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
 
     return JSONResponse({"ok": True})

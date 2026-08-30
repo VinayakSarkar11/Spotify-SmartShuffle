@@ -376,10 +376,7 @@ def collect_playlists(conn):
         offset = 0
         current_ids = []
         while True:
-            tracks = sp.playlist_tracks(
-                pl_id, limit=100, offset=offset,
-                fields="items(added_at,item(id,name,artists,duration_ms),track(id,name,artists,duration_ms)),next"
-            )
+            tracks = sp.playlist_tracks(pl_id, limit=100, offset=offset)
             for item in tracks.get("items", []):
                 # Spotify renamed "track" → "item" in playlist responses; fall back for older clients
                 track = item.get("item") or item.get("track")

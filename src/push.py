@@ -196,6 +196,54 @@ def load_queue(queue_id: int | None, algorithm: str = "smartshuffle") -> tuple |
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def append(queue_id: int | None = None, algorithm: str | None = None):
+    """Append the most-recently-generated queue to the existing SmartShuffle playlist.
+
+    Does NOT touch playback — songs land at the end of the queue so the user
+    can keep listening without interruption. Records the push in rolling mode.
+    """
+    if algorithm is None:
+        algorithm = "smartshuffle"
+
+    row = load_queue(queue_id, algorithm)
+    if not row:
+        print("No queue found.")
+        return
+
+    q_id, songs_json, pl_name, context, _, algorithm, source_playlist_id = row
+    songs = json.loads(songs_json)
+    uris  = [f"spotify:track:{s['song_id']}" for s in songs]
+
+    push_playlist_id = _get_or_create_push_playlist()
+
+    print(f"Appending {len(songs)} songs to SmartShuffle Queue playlist…")
+    for i in range(0, len(uris), 100):
+        sp.playlist_add_items(push_playlist_id, uris[i:i + 100])
+
+    # Read rolling state to preserve session linkage
+    try:
+        with open(ROLLING_STATE_PATH) as f:
+            rqs = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        rqs = {}
+
+    rolling_session_id = rqs.get("session_push_id")
+
+    conn = sqlite3.connect(DB_PATH)
+    _init_push_table(conn)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO queue_pushes (queue_id, algorithm, pushed_at, mode, rolling_session_id)"
+        " VALUES (?,?,?,?,?)",
+        (q_id, algorithm, now_iso, "rolling", rolling_session_id),
+    )
+    conn.commit()
+    conn.close()
+
+    _start_watcher()
+    print("Watcher restarted.")
+
+
 def play(queue_id: int | None = None, algorithm: str | None = None,
          device_id: str | None = None, rolling: bool = False):
     if algorithm is None:
@@ -471,11 +519,15 @@ def main():
     parser.add_argument("--device-id", help="Spotify device ID to play on")
     parser.add_argument("--rolling",   action="store_true",
                         help="Enable rolling mode: session_watcher will auto-refill playlist")
+    parser.add_argument("--append",    action="store_true",
+                        help="Append songs to existing playlist without touching playback")
     parser.add_argument("--list",      action="store_true", help="List recent queues")
     args = parser.parse_args()
 
     if args.list:
         list_queues()
+    elif args.append:
+        append(args.id, args.algorithm)
     else:
         play(args.id, args.algorithm, args.device_id, rolling=args.rolling)
 

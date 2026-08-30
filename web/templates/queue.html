@@ -57,12 +57,6 @@
       </div>
 
       <div class="flex gap-2 shrink-0">
-        <button id="resume-btn" onclick="resumeQueue()" hidden
-                class="bg-gray-700 text-white font-semibold text-sm tracking-wide
-                       px-5 py-2.5 rounded-full hover:bg-gray-600 transition-colors
-                       disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-          + 10 songs
-        </button>
         <button id="start-btn" onclick="startQueue()"
                 class="bg-spotify text-black font-semibold text-sm tracking-wide
                        px-6 py-2.5 rounded-full hover:bg-spotify/90 transition-colors
@@ -109,6 +103,16 @@
 
   <!-- Song list -->
   <div id="song-list" class="space-y-2"></div>
+
+  <!-- + 10 songs button — shown below the list when a session exists -->
+  <div id="resume-row" class="hidden mt-4 flex justify-center">
+    <button id="resume-btn" onclick="resumeQueue()"
+            class="bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 font-medium
+                   px-6 py-2.5 rounded-full transition-colors border border-gray-700
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      + 10 songs
+    </button>
+  </div>
 
   <!-- Empty / error state -->
   <div id="queue-error" class="hidden text-center py-16 text-gray-600">
@@ -398,8 +402,8 @@ async function loadQueue() {
     document.getElementById('queue-status').style.color =
       enabled ? '#1DB954' : '#6b7280';
 
-    // Show "+ 10 songs" whenever a session exists (dead or alive watcher)
-    document.getElementById('resume-btn').hidden = !d.session_push_id;
+    // Show "+ 10 songs" below the list whenever a session exists
+    document.getElementById('resume-row').classList.toggle('hidden', !d.session_push_id);
 
     const refill = d.last_refill_at
       ? new Date(d.last_refill_at).toLocaleString()
@@ -806,7 +810,7 @@ async function resumeQueue() {
   const btn  = document.getElementById('resume-btn');
   const stat = document.getElementById('start-status');
   btn.disabled = true;
-  btn.textContent = 'Resuming…';
+  btn.textContent = 'Adding…';
   stat.textContent = 'Generating 10 more songs…';
   stat.classList.remove('hidden');
   try {
@@ -820,16 +824,15 @@ async function resumeQueue() {
       stat.textContent = `Error: ${data.error || res.status}${data.detail ? ' — ' + data.detail.slice(-200) : ''}`;
       stat.style.color = '#ef4444';
     } else {
-      stat.textContent = 'Resumed. Refreshing…';
+      stat.textContent = '10 songs added to end of queue. Refreshing…';
       stat.style.color = '#1DB954';
-      btn.textContent = 'Resumed';
-      loadQueue();
+      setTimeout(loadQueue, 1200);
     }
   } catch (e) {
     stat.textContent = 'Network error';
     stat.style.color = '#ef4444';
   } finally {
-    if (btn.textContent === 'Resuming…') btn.textContent = 'Resume queue';
+    btn.textContent = '+ 10 songs';
     btn.disabled = false;
   }
 }
