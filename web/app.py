@@ -234,7 +234,7 @@ def _collect_in_background(user_id: str) -> None:
     try:
         env = _subprocess_env(user_id)
         subprocess.Popen(
-            [sys.executable, os.path.join(ROOT, "src", "collect.py")],
+            [sys.executable, os.path.join(ROOT, "src", "collect.py"), "--plays-only"],
             cwd=ROOT, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -295,7 +295,7 @@ async def api_collect(user: dict = Depends(current_user)):
     env     = _subprocess_env(user["user_id"])
     try:
         r = subprocess.run(
-            [sys.executable, os.path.join(src_dir, "collect.py")],
+            [sys.executable, os.path.join(src_dir, "collect.py"), "--plays-only"],
             capture_output=True, text=True, timeout=120, cwd=ROOT, env=env,
         )
     except subprocess.TimeoutExpired:

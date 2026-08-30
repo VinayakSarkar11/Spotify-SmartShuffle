@@ -1048,6 +1048,12 @@ def purge_old_plays(conn, days: int = 90) -> int:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse as _ap
+    _parser = _ap.ArgumentParser()
+    _parser.add_argument("--plays-only", action="store_true",
+                         help="Skip playlist sync — only collect recent plays and attribute them")
+    _args, _ = _parser.parse_known_args()
+
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _db_path = os.getenv("SS_DB_PATH") or os.path.join(_root, "data", "smartshuffle.db")
     conn = sqlite3.connect(_db_path)
@@ -1056,17 +1062,18 @@ def main():
     print("=== SmartShuffle Data Collection ===")
     print(f"Started: {now_iso()}\n")
 
-    # Cold start: no play history yet — seed songs from top tracks so phase2.py
-    # has enough tag data to produce a non-trivial energy prior.
-    play_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
-    if play_count == 0:
-        print("No play history yet — bootstrapping from your top tracks...")
-        bootstrap_cold_start(conn)
-        print()
+    if not _args.plays_only:
+        # Cold start: no play history yet — seed songs from top tracks so phase2.py
+        # has enough tag data to produce a non-trivial energy prior.
+        play_count = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        if play_count == 0:
+            print("No play history yet — bootstrapping from your top tracks...")
+            bootstrap_cold_start(conn)
+            print()
 
-    print("Syncing playlists...")
-    collect_playlists(conn)
-    print()
+        print("Syncing playlists...")
+        collect_playlists(conn)
+        print()
 
     print("Collecting recently played tracks...")
     inserted = collect_recently_played(conn)

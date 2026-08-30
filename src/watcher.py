@@ -780,7 +780,7 @@ def _check_refill(
     # Sync plays so dashboard/stats stay current after each refill.
     try:
         subprocess.run(
-            [sys.executable, os.path.join(DIR, "src", "collect.py")],
+            [sys.executable, os.path.join(DIR, "src", "collect.py"), "--plays-only"],
             capture_output=True, timeout=90,
         )
     except Exception as _ce:
