@@ -49,8 +49,9 @@ _QUALIFY_PLAYS = 4
 
 def _db(user_id: str) -> sqlite3.Connection:
     paths = get_user_paths(user_id)
-    conn  = sqlite3.connect(paths["db"])
+    conn  = sqlite3.connect(paths["db"], timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -797,10 +798,6 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
     try:
         push_count = 0
         if session_push_id:
-            push_count = (conn.execute("""
-                SELECT COUNT(*) FROM queue_pushes
-                WHERE COALESCE(rolling_session_id, push_id) = ?
-            """, (session_push_id,)).fetchone() or [0])[0]
             rows = conn.execute("""
                 SELECT qp.pushed_at, q.songs
                 FROM queue_pushes qp
@@ -808,6 +805,7 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
                 WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
                 ORDER BY qp.push_id ASC
             """, (session_push_id,)).fetchall()
+            push_count = len(rows)
             if rows:
                 push_at   = rows[-1]["pushed_at"]
                 raw_songs = []

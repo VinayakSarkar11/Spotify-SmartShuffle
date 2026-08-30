@@ -762,7 +762,8 @@ def _check_refill(
     now = datetime.now(timezone.utc).isoformat()
     session_push_id = rolling.get("session_push_id")
     try:
-        conn2 = sqlite3.connect(DB_PATH)
+        conn2 = sqlite3.connect(DB_PATH, timeout=10)
+        conn2.execute("PRAGMA journal_mode=WAL")
         conn2.execute("""
             INSERT INTO queue_pushes (queue_id, algorithm, pushed_at, mode, rolling_session_id)
             VALUES (?, ?, ?, 'rolling', ?)
