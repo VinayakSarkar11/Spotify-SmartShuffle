@@ -1003,6 +1003,18 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
         return JSONResponse({"error": "Spotify push failed",
                              "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
 
+    # push.py --rolling rewrites the rolling state without target_override — restore it.
+    try:
+        with open(rqs_path) as f:
+            fresh_rqs = json.load(f)
+        fresh_rqs["target_override"] = new_target
+        tmp = rqs_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(fresh_rqs, f)
+        os.replace(tmp, rqs_path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
     return JSONResponse({"ok": True, "fitting_songs": fitting, "target": new_target})
 
 
