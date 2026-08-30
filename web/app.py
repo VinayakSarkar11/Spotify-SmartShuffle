@@ -530,7 +530,7 @@ async def api_stats(user: dict = Depends(current_user)):
           AND qp.algorithm = 'smartshuffle'
           AND pc.plays_n IS NOT NULL
         ORDER BY qp.push_id DESC
-        LIMIT 30
+        LIMIT 10
     """).fetchall()
 
     conn.close()
