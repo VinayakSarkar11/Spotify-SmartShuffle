@@ -240,7 +240,8 @@ def append(queue_id: int | None = None, algorithm: str | None = None):
     conn.commit()
     conn.close()
 
-    rqs["last_refill_at"] = now_iso
+    rqs["last_refill_at"]  = now_iso
+    rqs["session_songs"]   = rqs.get("session_songs", []) + songs
     _write_rolling_state(rqs)
 
     _start_watcher()
@@ -448,6 +449,7 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
         "device_id":          device["id"],
         "last_refill_at":     None,
         "session_push_id":    session_push_id,
+        "session_songs":      songs,
     })
 
     print(f"\nPlaying: {songs[0]['song_name']} — {songs[0]['artist_name']}")

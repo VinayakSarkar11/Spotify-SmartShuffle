@@ -776,6 +776,7 @@ def _check_refill(
         print(f"  [watcher] ERROR recording refill push: {_e}", flush=True)
 
     rolling["last_refill_at"] = now
+    rolling["session_songs"]  = rolling.get("session_songs", []) + new_songs
     _write_rolling_state(rolling)
 
     # Sync plays so dashboard/stats stay current after each refill.

@@ -796,8 +796,15 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
     playlist_name = None
     push_at       = None
     try:
-        push_count = 0
-        if session_push_id:
+        push_count    = 0
+        session_songs = rqs.get("session_songs", [])
+        if session_songs:
+            # Primary: songs accumulated in rolling state on each push/refill/append.
+            # This is reliable regardless of DB join correctness.
+            push_count = max(1, len(session_songs) // 10)
+            songs_out  = _song_explanations(session_songs, effective_target, vibe_sigmas, weights)
+        elif session_push_id:
+            # Fallback: stitch from DB (older sessions that pre-date session_songs).
             rows = conn.execute("""
                 SELECT qp.pushed_at, q.songs
                 FROM queue_pushes qp
