@@ -99,7 +99,7 @@
             <th class="pb-3 pr-6 font-medium">Date</th>
             <th class="pb-3 pr-6 font-medium">Playlist</th>
             <th class="pb-3 pr-4 font-medium text-right">Queued</th>
-            <th class="pb-3 pr-4 font-medium text-right">Played</th>
+            <th class="pb-3 pr-4 font-medium text-right">Seen</th>
             <th class="pb-3 font-medium text-right">Skip rate</th>
           </tr>
         </thead>
@@ -368,6 +368,24 @@ async function load() {
                  : skipV > 0.45  ? 'text-red-400' : 'text-gray-300';
     const skipStr = skipV != null ? `${(skipV * 100).toFixed(0)}%` : '—';
 
+    // songs seen = skip-rate denominator (plays with known status + LIS queue skips)
+    const seen    = (r.plays_n ?? 0) + (r.qs_n ?? 0);
+    const queued  = r.total_queued ?? 0;
+
+    // Flag when queue drained (seen ≥ queued − 4): watcher should have refilled before this point
+    const drained = queued > 0 && seen >= queued - 4;
+    // Flag when seen is impossibly low for the number of refills: each refill needs ~6+ plays
+    const nRefills     = Math.max(0, Math.round(queued / 10) - 1);
+    const minExpected  = nRefills * 6;
+    const incomplete   = nRefills > 0 && seen < minExpected;
+
+    const seenCl  = drained   ? 'text-amber-400'
+                  : incomplete ? 'text-red-400/70'
+                  : 'text-gray-400';
+    const seenTip = drained   ? 'title="Queue drained — watcher may not have refilled in time"'
+                  : incomplete ? `title="Only ${seen} seen but ${nRefills} refills imply ≥${minExpected} — attribution may be incomplete"`
+                  : '';
+
     // Encode vibe data for the expand panel
     const vibeData = JSON.stringify({
       avg_content: r.avg_content,
@@ -385,8 +403,8 @@ async function load() {
           ${fmtDate(r.pushed_at)}
         </td>
         <td class="py-3 pr-6 text-gray-300 max-w-[180px] truncate" title="${pl}">${pl}</td>
-        <td class="py-3 pr-4 text-gray-500 text-right">${r.total_queued ?? '—'}</td>
-        <td class="py-3 pr-4 text-gray-400 text-right">${r.plays_n ?? '—'}</td>
+        <td class="py-3 pr-4 text-gray-500 text-right">${queued || '—'}</td>
+        <td class="py-3 pr-4 ${seenCl} text-right" ${seenTip}>${seen || '—'}</td>
         <td class="py-3 text-right"><span class="${skipCl} font-medium">${skipStr}</span></td>
         <td class="hidden" data-vibe="${vibeData}"></td>
       </tr>`;

@@ -815,19 +815,26 @@ def attribute_plays_to_queues(conn):
             _infer_queue_skips(conn, push_id, algorithm, pushed_at, songs_json)
 
     # Process rolling sessions as combined queues.
-    # Only run once all pushes in the session are closed (> 2 hours old).
-    pending_sessions: dict = {}
+    # Run combined inference once ALL pushes in the session are closed (> 2 hours old),
+    # regardless of whether some were already processed individually. Per-push skips are
+    # deleted and replaced by the combined result inside _infer_rolling_session_skips.
+    pending_sessions: set = set()
     for push_id, algorithm, pushed_at, songs_json, mode, session_id in closed:
         if mode == 'rolling':
-            pending_sessions.setdefault(session_id, []).append(push_id)
+            pending_sessions.add(session_id)
 
-    for session_id, unprocessed_push_ids in pending_sessions.items():
+    for session_id in pending_sessions:
         total_in_session = conn.execute(
             "SELECT COUNT(*) FROM queue_pushes WHERE COALESCE(rolling_session_id, push_id) = ?",
             (session_id,),
         ).fetchone()[0]
-        if len(unprocessed_push_ids) == total_in_session:
-            # All pushes closed and unprocessed — safe to run combined inference.
+        closed_in_session = conn.execute("""
+            SELECT COUNT(*) FROM queue_pushes
+            WHERE COALESCE(rolling_session_id, push_id) = ?
+              AND REPLACE(SUBSTR(pushed_at, 1, 19), 'T', ' ') < datetime('now', '-2 hours')
+        """, (session_id,)).fetchone()[0]
+        if closed_in_session == total_in_session:
+            # All pushes closed — run combined inference (replaces any stale per-push results).
             _infer_rolling_session_skips(conn, session_id)
 
     return attributed
