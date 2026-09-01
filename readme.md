@@ -20,12 +20,12 @@ If Chill morning, Chill afternoon, and Chill evening have different vibes, you'd
 
 A/B test — SS rolling vs. random baseline, sessions with at least 4 plays:
 
-| Algorithm | Sessions | Plays | Skip rate | Avg songs/session |
+| Algorithm | Sessions | Plays | Skip rate | Avg plays/session |
 |-----------|----------|-------|-----------|-------------------|
-| SmartShuffle (rolling) | 12 | 171 | **26.8%** | **13.9** |
-| Random baseline | 25 | 208 | **43.0%** | **8.8** |
+| SmartShuffle (rolling) | 34 | 682 | **26.4%** | **20.1** |
+| Random baseline | 14 | 174 | **45.7%** | **12.4** |
 
-**16.2pp lower skip rate. χ²=15.13, p=0.0001.** Sessions run 59% longer on average. Full breakdown in `docs/statistics.md`.
+**19.3pp lower skip rate. χ²=41.55, p<0.0001.** SS sessions average 62% more plays. Full breakdown in `docs/statistics.md`.
 
 The meaningful comparison is rolling mode because the system observes each batch of songs before generating the next — it can adapt to live session behavior in a way that generating 180 songs upfront cannot.
 
