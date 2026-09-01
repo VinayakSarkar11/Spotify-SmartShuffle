@@ -868,28 +868,26 @@ def attribute_plays_to_queues(conn):
         if mode != 'rolling':
             _infer_queue_skips(conn, push_id, algorithm, pushed_at, songs_json)
 
-    # Process rolling sessions as combined queues.
-    # Run combined inference once ALL pushes in the session are closed (> 2 hours old),
-    # regardless of whether some were already processed individually. Per-push skips are
-    # deleted and replaced by the combined result inside _infer_rolling_session_skips.
-    pending_sessions: set = set()
-    for push_id, algorithm, pushed_at, songs_json, mode, session_id in closed:
-        if mode == 'rolling':
-            pending_sessions.add(session_id)
+    # Run combined LIS inference for every rolling session where:
+    #   (a) all pushes are > 2h old (full attribution window closed), AND
+    #   (b) at least one push has skips_inferred_at IS NULL (not yet processed).
+    # Queried directly rather than derived from the `closed` list so that sessions
+    # are never silently dropped if the IS NULL invariant is broken elsewhere.
+    ready_sessions = conn.execute("""
+        SELECT COALESCE(rolling_session_id, push_id) AS session_id
+        FROM queue_pushes
+        WHERE mode = 'rolling'
+        GROUP BY session_id
+        HAVING
+            COUNT(*) = SUM(
+                CASE WHEN REPLACE(SUBSTR(pushed_at, 1, 19), 'T', ' ') < datetime('now', '-2 hours')
+                THEN 1 ELSE 0 END
+            )
+            AND SUM(CASE WHEN skips_inferred_at IS NULL THEN 1 ELSE 0 END) > 0
+    """).fetchall()
 
-    for session_id in pending_sessions:
-        total_in_session = conn.execute(
-            "SELECT COUNT(*) FROM queue_pushes WHERE COALESCE(rolling_session_id, push_id) = ?",
-            (session_id,),
-        ).fetchone()[0]
-        closed_in_session = conn.execute("""
-            SELECT COUNT(*) FROM queue_pushes
-            WHERE COALESCE(rolling_session_id, push_id) = ?
-              AND REPLACE(SUBSTR(pushed_at, 1, 19), 'T', ' ') < datetime('now', '-2 hours')
-        """, (session_id,)).fetchone()[0]
-        if closed_in_session == total_in_session:
-            # All pushes closed — run combined inference (replaces any stale per-push results).
-            _infer_rolling_session_skips(conn, session_id)
+    for (session_id,) in ready_sessions:
+        _infer_rolling_session_skips(conn, session_id)
 
     return attributed
 
