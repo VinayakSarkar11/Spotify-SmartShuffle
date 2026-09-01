@@ -1013,7 +1013,7 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
     try:
         r1 = subprocess.run(
             [sys.executable, os.path.join(src_dir, "recommend.py"),
-             "--playlist", source_pl_id, "--count", "10", "--target", target_str],
+             "--playlist", source_pl_id, "--count", "10", f"--target={target_str}"],
             capture_output=True, text=True, timeout=120, cwd=ROOT, env=env,
         )
     except subprocess.TimeoutExpired:
@@ -1103,8 +1103,7 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
     target_override = rqs.get("target_override")
     if target_override:
         try:
-            rec_cmd += ["--target",
-                        f"{float(target_override['content'])},"
+            rec_cmd += [f"--target={float(target_override['content'])},"
                         f"{float(target_override['melodic'])},"
                         f"{float(target_override['bpm'])}"]
         except (KeyError, TypeError, ValueError):
@@ -1171,7 +1170,7 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
             c = float(vibe_target["content"])
             m = float(vibe_target["melodic"])
             b = float(vibe_target["bpm"])
-            rec_cmd += ["--target", f"{c},{m},{b}"]
+            rec_cmd += [f"--target={c},{m},{b}"]
         except (KeyError, TypeError, ValueError):
             pass
 
