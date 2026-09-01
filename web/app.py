@@ -357,6 +357,49 @@ async def admin_upload_file(request: Request, filename: str):
 
 
 
+@app.post("/admin/fix-unknown-skips")
+async def admin_fix_unknown_skips(request: Request):
+    """One-off migration: fix plays stuck at inferred_skip='unknown'."""
+    import sys as _sys
+    secret = os.getenv("ADMIN_UPLOAD_SECRET", "")
+    if not secret or request.headers.get("X-Admin-Secret") != secret:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    _sys.path.insert(0, os.path.join(ROOT, ".."))
+    from src.collect import infer_skip as _infer_skip
+    from datetime import datetime as _dt
+    conn = sqlite3.connect(os.path.join(ROOT, "data", "smartshuffle.db"))
+    conn.execute("PRAGMA journal_mode=WAL")
+    rows = conn.execute("""
+        SELECT p1.played_at, p1.duration_ms,
+               p2.played_at AS next_played_at
+        FROM plays p1
+        JOIN plays p2 ON p2.played_at = (
+            SELECT p3.played_at FROM plays p3
+            WHERE p3.played_at > p1.played_at
+            ORDER BY p3.played_at LIMIT 1
+        )
+        WHERE p1.inferred_skip = 'unknown'
+        ORDER BY p1.played_at
+    """).fetchall()
+    updated = 0
+    for played_at, duration_ms, next_played_at in rows:
+        t1 = _dt.fromisoformat(played_at.replace("Z", "+00:00"))
+        t2 = _dt.fromisoformat(next_played_at.replace("Z", "+00:00"))
+        gap_ms = int((t2 - t1).total_seconds() * 1000)
+        play_duration_ms = min(gap_ms, duration_ms) if duration_ms else gap_ms
+        new_skip = _infer_skip(play_duration_ms, duration_ms)
+        if new_skip != "unknown":
+            conn.execute(
+                "UPDATE plays SET play_duration_ms = ?, inferred_skip = ? WHERE played_at = ? AND inferred_skip = 'unknown'",
+                (play_duration_ms, new_skip, played_at)
+            )
+            updated += 1
+    remaining = conn.execute("SELECT COUNT(*) FROM plays WHERE inferred_skip = 'unknown'").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return JSONResponse({"fixed": updated, "remaining_unknown": remaining})
+
+
 @app.get("/")
 async def index(request: Request):
     user_id = request.session.get("user_id")
