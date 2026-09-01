@@ -100,6 +100,7 @@
             <th class="pb-3 pr-6 font-medium">Playlist</th>
             <th class="pb-3 pr-4 font-medium text-right">Queued</th>
             <th class="pb-3 pr-4 font-medium text-right">Seen</th>
+            <th class="pb-3 pr-4 font-medium text-right">Played</th>
             <th class="pb-3 font-medium text-right">Skip rate</th>
           </tr>
         </thead>
@@ -405,6 +406,7 @@ async function load() {
         <td class="py-3 pr-6 text-gray-300 max-w-[180px] truncate" title="${pl}">${pl}</td>
         <td class="py-3 pr-4 text-gray-500 text-right">${queued || '—'}</td>
         <td class="py-3 pr-4 ${seenCl} text-right" ${seenTip}>${seen || '—'}</td>
+        <td class="py-3 pr-4 text-gray-400 text-right">${(r.plays_n ?? 0) || '—'}</td>
         <td class="py-3 text-right"><span class="${skipCl} font-medium">${skipStr}</span></td>
         <td class="hidden" data-vibe="${vibeData}"></td>
       </tr>`;
