@@ -322,6 +322,19 @@ def collect_recently_played(conn):
         except Exception as e:
             print(f"  Error inserting {p['song_name']}: {e}")
 
+    # The last play in every batch is inserted as 'unknown' because there's no
+    # successor yet to compute the gap. On the next collection run it won't be
+    # re-inserted (INSERT OR IGNORE), so it stays unknown forever. Fix: after
+    # inserting, update any plays from this batch (except the new last) that are
+    # still stored as unknown but now have a known inferred_skip.
+    for p in plays[:-1]:
+        if p["inferred_skip"] != "unknown":
+            conn.execute("""
+                UPDATE plays
+                SET play_duration_ms = ?, inferred_skip = ?
+                WHERE played_at = ? AND inferred_skip = 'unknown'
+            """, (p["play_duration_ms"], p["inferred_skip"], p["played_at"]))
+
     conn.commit()
     return inserted
 
