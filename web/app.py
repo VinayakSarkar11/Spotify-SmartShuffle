@@ -972,6 +972,31 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
             "error": f"Only {fitting} songs fit this target (need 10). Move the target closer to the playlist centre."
         }, status_code=422)
 
+    # Capture the played history before push.py overwrites rolling state.
+    # Truncate at the currently playing song so only the heard portion is kept.
+    pre_flush_songs: list = []
+    try:
+        old_session_songs = rqs.get("session_songs", [])
+        if old_session_songs:
+            current_track_id = None
+            try:
+                pb = spotify_for_user(user_id).current_playback()
+                if pb and pb.get("item"):
+                    current_track_id = pb["item"]["id"]
+            except Exception:
+                pass
+            if current_track_id:
+                for i, s in enumerate(old_session_songs):
+                    if s.get("song_id") == current_track_id:
+                        pre_flush_songs = old_session_songs[: i + 1]
+                        break
+                else:
+                    pre_flush_songs = old_session_songs  # current song not found, keep all
+            else:
+                pre_flush_songs = old_session_songs
+    except Exception:
+        pass
+
     rqs["target_override"] = new_target
     tmp = rqs_path + ".tmp"
     with open(tmp, "w") as f:
@@ -1008,11 +1033,15 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
         return JSONResponse({"error": "Spotify push failed",
                              "detail": (r2.stdout + r2.stderr)[-2000:]}, status_code=500)
 
-    # push.py --rolling rewrites the rolling state without target_override — restore it.
+    # push.py --rolling writes a fresh session_songs (just the new batch).
+    # Prepend the pre-flush played history so the queue tab shows the full session.
+    # Also restore target_override which push.py doesn't know about.
     try:
         with open(rqs_path) as f:
             fresh_rqs = json.load(f)
         fresh_rqs["target_override"] = new_target
+        if pre_flush_songs:
+            fresh_rqs["session_songs"] = pre_flush_songs + fresh_rqs.get("session_songs", [])
         tmp = rqs_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(fresh_rqs, f)
