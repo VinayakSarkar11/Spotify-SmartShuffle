@@ -757,6 +757,46 @@ def analyze_queue_session(conn, push_id: int, algorithm: str, pushed_at: str, so
     conn.commit()
 
 
+def _fix_unknown_inferred_skips(conn) -> int:
+    """
+    Retroactive fix for plays stuck at inferred_skip='unknown'.
+
+    Every collection run inserts the last fetched play as 'unknown' (no
+    successor yet). INSERT OR IGNORE means it's never updated when the next
+    play arrives. This finds all such plays that now have a successor and
+    patches them. Safe to call on every collection run — after the first pass
+    it returns immediately with 0 rows to update.
+    """
+    rows = conn.execute("""
+        SELECT p1.played_at, p1.duration_ms, p2.played_at AS next_played_at
+        FROM plays p1
+        JOIN plays p2 ON p2.played_at = (
+            SELECT p3.played_at FROM plays p3
+            WHERE p3.played_at > p1.played_at
+            ORDER BY p3.played_at LIMIT 1
+        )
+        WHERE p1.inferred_skip = 'unknown'
+        ORDER BY p1.played_at
+    """).fetchall()
+    updated = 0
+    for played_at, duration_ms, next_played_at in rows:
+        t1 = datetime.fromisoformat(played_at.replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat(next_played_at.replace("Z", "+00:00"))
+        gap_ms = int((t2 - t1).total_seconds() * 1000)
+        play_duration_ms = min(gap_ms, duration_ms) if duration_ms else gap_ms
+        new_skip = infer_skip(play_duration_ms, duration_ms)
+        if new_skip != "unknown":
+            conn.execute(
+                "UPDATE plays SET play_duration_ms = ?, inferred_skip = ? "
+                "WHERE played_at = ? AND inferred_skip = 'unknown'",
+                (play_duration_ms, new_skip, played_at),
+            )
+            updated += 1
+    if updated:
+        conn.commit()
+    return updated
+
+
 def attribute_plays_to_queues(conn):
     """
     Step 1 — Attribution: tags plays within 2 hours of each push with the
@@ -768,6 +808,7 @@ def attribute_plays_to_queues(conn):
 
     Both steps are idempotent.
     """
+    _fix_unknown_inferred_skips(conn)
     try:
         _init_session_tables(conn)
         pushes = conn.execute("""
