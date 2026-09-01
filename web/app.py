@@ -360,12 +360,20 @@ async def admin_upload_file(request: Request, filename: str):
 @app.post("/admin/fix-unknown-skips")
 async def admin_fix_unknown_skips(request: Request):
     """One-off migration: fix plays stuck at inferred_skip='unknown'."""
-    import sys as _sys
     secret = os.getenv("ADMIN_UPLOAD_SECRET", "")
     if not secret or request.headers.get("X-Admin-Secret") != secret:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    _sys.path.insert(0, os.path.join(ROOT, ".."))
-    from src.collect import infer_skip as _infer_skip
+    def _infer_skip(play_duration_ms, song_duration_ms):
+        if play_duration_ms is None or song_duration_ms is None or song_duration_ms == 0:
+            return "unknown"
+        if play_duration_ms < 1_000:
+            return "unknown"
+        ratio = play_duration_ms / song_duration_ms
+        if ratio < 0.30:
+            return "skip"
+        if ratio < 0.80:
+            return "partial"
+        return "full"
     from datetime import datetime as _dt
     conn = sqlite3.connect(os.path.join(ROOT, "data", "smartshuffle.db"))
     conn.execute("PRAGMA journal_mode=WAL")
