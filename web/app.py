@@ -407,9 +407,6 @@ async def api_songs_stats(user: dict = Depends(current_user)):
     today = datetime.now(timezone.utc).date().isoformat()
     # Only count plays that went through the queue — skip inference is unreliable
     # for manual/browse listening where gaps don't reflect skipping intent.
-    QUEUE_SOURCES = ("'smartshuffle_queued'", "'random_baseline_queued'")
-    queue_source_filter = f"p.play_source IN ({', '.join(QUEUE_SOURCES)})"
-
     def days_ago(last_played_str):
         if not last_played_str:
             return None
@@ -419,54 +416,68 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             return None
 
     try:
-        # Compute per-song queue skip rates directly from plays.
-        # play_count here = total times heard through a queue (more meaningful for skip rate).
-        song_stats_rows = conn.execute(f"""
+        # Skip rate = queue_skips / (queue_skips + queue_plays).
+        # queue_skips: LIS-inferred songs in a push that were never played (skipped over).
+        # queue_plays: songs actually started via smartshuffle/random_baseline queues.
+        # This matches the session-level skip metric and reflects real preference.
+        song_stats_rows = conn.execute("""
+            WITH queue_plays AS (
+                SELECT p.song_id,
+                       s.song_name, s.artist_name,
+                       COUNT(*) AS plays_n,
+                       MAX(p.played_at) AS last_played
+                FROM plays p
+                JOIN songs s ON s.song_id = p.song_id
+                WHERE p.inferred_skip IN ('skip', 'partial', 'full')
+                  AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                GROUP BY p.song_id
+            ),
+            queue_skips AS (
+                SELECT qs.song_id, COUNT(*) AS qs_n
+                FROM queue_skips qs
+                GROUP BY qs.song_id
+            )
             SELECT
-                s.song_name,
-                s.artist_name,
-                p.song_id,
-                COUNT(*) AS queue_plays,
+                qp.song_name, qp.artist_name, qp.song_id,
+                qp.plays_n,
+                COALESCE(qsk.qs_n, 0) AS qs_n,
+                qp.plays_n + COALESCE(qsk.qs_n, 0) AS total_exposures,
                 ROUND(
-                    SUM(CASE WHEN p.inferred_skip = 'skip' THEN 1.0 ELSE 0.0 END) / COUNT(*),
+                    CAST(COALESCE(qsk.qs_n, 0) AS REAL)
+                    / (qp.plays_n + COALESCE(qsk.qs_n, 0)),
                     3
                 ) AS skip_rate,
-                MAX(p.played_at) AS last_played,
-                ss.binge_score
-            FROM plays p
-            JOIN songs s ON s.song_id = p.song_id
-            LEFT JOIN song_scores ss ON ss.song_id = p.song_id
-            WHERE p.inferred_skip IN ('skip', 'partial', 'full')
-              AND {queue_source_filter}
-            GROUP BY p.song_id
+                qp.last_played
+            FROM queue_plays qp
+            LEFT JOIN queue_skips qsk ON qsk.song_id = qp.song_id
         """).fetchall()
 
-        # Favorites: min 4 queue plays, lowest skip rate, then most plays
+        # Favorites: min 5 total exposures, lowest skip rate, then most plays
         fav_rows = sorted(
-            [r for r in song_stats_rows if r["queue_plays"] >= 4],
-            key=lambda r: (r["skip_rate"], -r["queue_plays"])
+            [r for r in song_stats_rows if r["total_exposures"] >= 5],
+            key=lambda r: (r["skip_rate"], -r["plays_n"])
         )[:10]
         favorites = [
             {
                 "song_name": r["song_name"],
                 "artist_name": r["artist_name"],
-                "play_count": r["queue_plays"],
+                "play_count": r["plays_n"],
                 "skip_rate": r["skip_rate"],
                 "days_since_played": days_ago(r["last_played"]),
             }
             for r in fav_rows
         ]
 
-        # Most skipped: min 3 queue plays, highest skip rate
+        # Most skipped: min 5 total exposures, highest skip rate
         skip_rows = sorted(
-            [r for r in song_stats_rows if r["queue_plays"] >= 3],
-            key=lambda r: (-r["skip_rate"], -r["queue_plays"])
+            [r for r in song_stats_rows if r["total_exposures"] >= 5],
+            key=lambda r: (-r["skip_rate"], -r["qs_n"])
         )[:10]
         most_skipped = [
             {
                 "song_name": r["song_name"],
                 "artist_name": r["artist_name"],
-                "play_count": r["queue_plays"],
+                "play_count": r["plays_n"],
                 "skip_rate": r["skip_rate"],
                 "days_since_played": days_ago(r["last_played"]),
             }
@@ -492,27 +503,45 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in binge_rows
         ]
 
-        # Top artists: queue plays only, skip rate from queue plays only
-        artist_rows = conn.execute(f"""
-            SELECT s.artist_name,
-                   COUNT(*) AS play_count,
-                   ROUND(
-                       SUM(CASE WHEN p.inferred_skip = 'skip' THEN 1.0 ELSE 0.0 END) / COUNT(*),
-                       3
-                   ) AS skip_rate,
-                   COUNT(DISTINCT p.song_id) AS unique_songs
-            FROM plays p
-            JOIN songs s ON s.song_id = p.song_id
-            WHERE p.inferred_skip IN ('skip', 'partial', 'full')
-              AND {queue_source_filter}
-            GROUP BY s.artist_name
-            ORDER BY play_count DESC
+        # Top artists: same queue_skips / (queue_skips + plays) formula
+        artist_rows = conn.execute("""
+            WITH artist_plays AS (
+                SELECT s.artist_name,
+                       COUNT(*) AS plays_n,
+                       COUNT(DISTINCT p.song_id) AS unique_songs
+                FROM plays p
+                JOIN songs s ON s.song_id = p.song_id
+                WHERE p.inferred_skip IN ('skip', 'partial', 'full')
+                  AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                GROUP BY s.artist_name
+            ),
+            artist_qs AS (
+                SELECT s.artist_name, COUNT(*) AS qs_n
+                FROM queue_skips qs
+                JOIN songs s ON s.song_id = qs.song_id
+                GROUP BY s.artist_name
+            )
+            SELECT
+                ap.artist_name,
+                ap.plays_n,
+                COALESCE(aqs.qs_n, 0) AS qs_n,
+                ap.plays_n + COALESCE(aqs.qs_n, 0) AS total_exposures,
+                ROUND(
+                    CAST(COALESCE(aqs.qs_n, 0) AS REAL)
+                    / (ap.plays_n + COALESCE(aqs.qs_n, 0)),
+                    3
+                ) AS skip_rate,
+                ap.unique_songs
+            FROM artist_plays ap
+            LEFT JOIN artist_qs aqs ON aqs.artist_name = ap.artist_name
+            WHERE ap.plays_n + COALESCE(aqs.qs_n, 0) >= 10
+            ORDER BY total_exposures DESC
             LIMIT 10
         """).fetchall()
         top_artists = [
             {
                 "artist_name": r["artist_name"],
-                "play_count": r["play_count"],
+                "play_count": r["plays_n"],
                 "skip_rate": r["skip_rate"],
                 "unique_songs": r["unique_songs"],
             }
