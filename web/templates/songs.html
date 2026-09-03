@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-5xl mx-auto px-6 py-10">
+
+  <div class="mb-8">
+    <h1 class="text-2xl font-semibold text-white">Song Analysis</h1>
+    <p class="text-gray-400 text-sm mt-1">Based on all plays collected so far.</p>
+  </div>
+
+  <!-- Top row: favorites + most skipped -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+
+    <!-- Favorites -->
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+        <span class="text-green-400">♥</span> Top Favorites
+        <span class="ml-auto text-xs text-gray-500 font-normal">min 4 plays · sorted by skip rate ↑, plays ↓</span>
+      </h2>
+      <div id="favorites-list" class="space-y-2">
+        <p class="text-gray-500 text-sm">Loading…</p>
+      </div>
+    </div>
+
+    <!-- Most skipped -->
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+        <span class="text-red-400">✕</span> Most Skipped
+        <span class="ml-auto text-xs text-gray-500 font-normal">min 3 plays · sorted by skip rate ↓</span>
+      </h2>
+      <div id="skipped-list" class="space-y-2">
+        <p class="text-gray-500 text-sm">Loading…</p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Top artists -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
+    <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+      <span class="text-blue-400">★</span> Top Artists
+      <span class="ml-auto text-xs text-gray-500 font-normal">by total plays</span>
+    </h2>
+    <div id="artists-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <p class="text-gray-500 text-sm col-span-full">Loading…</p>
+    </div>
+  </div>
+
+  <!-- Current binges -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <h2 class="text-sm font-semibold text-white mb-1 flex items-center gap-2">
+      <span class="text-yellow-400">⚡</span> Current Binges
+    </h2>
+    <p class="text-xs text-gray-500 mb-4">Songs with an active binge score — you've been playing these on repeat recently.</p>
+    <div id="binges-list">
+      <p class="text-gray-500 text-sm">Loading…</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function skipBadge(rate) {
+  if (rate === null || rate === undefined) return '';
+  const pct = Math.round(rate * 100);
+  if (rate <= 0.05) return `<span class="text-xs font-mono text-green-400">${pct}% skip</span>`;
+  if (rate <= 0.25) return `<span class="text-xs font-mono text-green-300">${pct}% skip</span>`;
+  if (rate <= 0.55) return `<span class="text-xs font-mono text-yellow-400">${pct}% skip</span>`;
+  return `<span class="text-xs font-mono text-red-400">${pct}% skip</span>`;
+}
+
+function songRow(song, rankColor) {
+  const plays = song.play_count;
+  const daysAgo = song.days_since_played != null
+    ? (song.days_since_played === 0 ? 'today' : `${song.days_since_played}d ago`)
+    : '';
+  return `
+    <div class="flex items-center gap-3 py-2 border-b border-gray-800 last:border-0">
+      <div class="flex-1 min-w-0">
+        <p class="text-sm text-white truncate">${song.song_name}</p>
+        <p class="text-xs text-gray-500 truncate">${song.artist_name}</p>
+      </div>
+      <div class="flex items-center gap-3 flex-shrink-0 text-right">
+        <span class="text-xs text-gray-500 font-mono w-14 text-right">${plays} plays</span>
+        ${skipBadge(song.skip_rate)}
+        ${daysAgo ? `<span class="text-xs text-gray-600 w-14 text-right">${daysAgo}</span>` : ''}
+      </div>
+    </div>`;
+}
+
+function bingeRow(song) {
+  const pct = Math.round(song.binge_score * 100);
+  const barW = Math.min(100, pct * 4);
+  const daysAgo = song.days_since_played != null
+    ? (song.days_since_played === 0 ? 'today' : `${song.days_since_played}d ago`)
+    : '';
+  return `
+    <div class="flex items-center gap-4 py-2.5 border-b border-gray-800 last:border-0">
+      <div class="flex-1 min-w-0">
+        <p class="text-sm text-white truncate">${song.song_name}</p>
+        <p class="text-xs text-gray-500 truncate">${song.artist_name}</p>
+        <div class="mt-1.5 h-1 bg-gray-800 rounded-full w-48 max-w-full">
+          <div class="h-1 bg-yellow-400 rounded-full" style="width:${barW}%"></div>
+        </div>
+      </div>
+      <div class="flex-shrink-0 text-right">
+        <p class="text-sm font-mono text-yellow-400">${pct}%</p>
+        <p class="text-xs text-gray-500">${song.play_count} plays</p>
+        ${daysAgo ? `<p class="text-xs text-gray-600">${daysAgo}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+function artistCard(a) {
+  const skipPct = Math.round(a.skip_rate * 100);
+  const skipColor = a.skip_rate <= 0.05 ? 'text-green-400' : a.skip_rate <= 0.20 ? 'text-green-300' : 'text-yellow-400';
+  return `
+    <div class="bg-gray-800 rounded-lg p-3">
+      <p class="text-sm text-white font-medium truncate">${a.artist_name}</p>
+      <p class="text-xl font-mono text-white mt-1">${a.play_count}</p>
+      <p class="text-xs text-gray-500">plays · ${a.unique_songs} songs</p>
+      <p class="text-xs mt-1 ${skipColor}">${skipPct}% skip</p>
+    </div>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/songs/stats');
+    if (!r.ok) throw new Error(r.statusText);
+    const d = await r.json();
+
+    document.getElementById('favorites-list').innerHTML =
+      d.favorites.length
+        ? d.favorites.map(s => songRow(s)).join('')
+        : '<p class="text-gray-500 text-sm">Not enough data yet (need 4+ plays per song).</p>';
+
+    document.getElementById('skipped-list').innerHTML =
+      d.most_skipped.length
+        ? d.most_skipped.map(s => songRow(s)).join('')
+        : '<p class="text-gray-500 text-sm">Not enough data yet.</p>';
+
+    document.getElementById('artists-list').innerHTML =
+      d.top_artists.map(a => artistCard(a)).join('');
+
+    if (d.binges.length) {
+      document.getElementById('binges-list').innerHTML = d.binges.map(s => bingeRow(s)).join('');
+    } else {
+      document.getElementById('binges-list').innerHTML =
+        '<p class="text-gray-500 text-sm">No active binges right now.</p>';
+    }
+  } catch (e) {
+    ['favorites-list','skipped-list','artists-list','binges-list'].forEach(id => {
+      document.getElementById(id).innerHTML = `<p class="text-red-400 text-sm">Error: ${e.message}</p>`;
+    });
+  }
+}
+
+load();
+</script>
+{% endblock %}

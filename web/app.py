@@ -391,6 +391,131 @@ async def queue_page(request: Request):
     return templates.TemplateResponse("queue.html", {"request": request, "user": user})
 
 
+@app.get("/songs")
+async def songs_page(request: Request):
+    if not request.session.get("user_id"):
+        return RedirectResponse("/login")
+    user = {"user_id": request.session["user_id"],
+            "display_name": request.session.get("display_name", "")}
+    return templates.TemplateResponse("songs.html", {"request": request, "user": user})
+
+
+@app.get("/api/songs/stats")
+async def api_songs_stats(user: dict = Depends(current_user)):
+    user_id = user["user_id"]
+    conn = _db(user_id)
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        # Favorites: min 4 plays, ordered by skip rate asc then plays desc
+        fav_rows = conn.execute("""
+            SELECT ss.song_name, ss.artist_name, ss.play_count, ss.skip_rate, ss.last_played
+            FROM song_scores ss
+            WHERE ss.play_count >= 4
+            ORDER BY ss.skip_rate ASC, ss.play_count DESC
+            LIMIT 10
+        """).fetchall()
+        favorites = []
+        for r in fav_rows:
+            days = None
+            if r["last_played"]:
+                try:
+                    lp = r["last_played"][:10]
+                    days = (datetime.fromisoformat(today) - datetime.fromisoformat(lp)).days
+                except Exception:
+                    pass
+            favorites.append({
+                "song_name": r["song_name"],
+                "artist_name": r["artist_name"],
+                "play_count": r["play_count"],
+                "skip_rate": r["skip_rate"],
+                "days_since_played": days,
+            })
+
+        # Most skipped: min 3 plays, skip_rate desc
+        skip_rows = conn.execute("""
+            SELECT ss.song_name, ss.artist_name, ss.play_count, ss.skip_rate, ss.last_played
+            FROM song_scores ss
+            WHERE ss.play_count >= 3
+            ORDER BY ss.skip_rate DESC, ss.play_count DESC
+            LIMIT 10
+        """).fetchall()
+        most_skipped = []
+        for r in skip_rows:
+            days = None
+            if r["last_played"]:
+                try:
+                    lp = r["last_played"][:10]
+                    days = (datetime.fromisoformat(today) - datetime.fromisoformat(lp)).days
+                except Exception:
+                    pass
+            most_skipped.append({
+                "song_name": r["song_name"],
+                "artist_name": r["artist_name"],
+                "play_count": r["play_count"],
+                "skip_rate": r["skip_rate"],
+                "days_since_played": days,
+            })
+
+        # Active binges: binge_score > 0
+        binge_rows = conn.execute("""
+            SELECT ss.song_name, ss.artist_name, ss.binge_score, ss.play_count,
+                   ss.skip_rate, ss.last_played
+            FROM song_scores ss
+            WHERE ss.binge_score > 0
+            ORDER BY ss.binge_score DESC
+            LIMIT 20
+        """).fetchall()
+        binges = []
+        for r in binge_rows:
+            days = None
+            if r["last_played"]:
+                try:
+                    lp = r["last_played"][:10]
+                    days = (datetime.fromisoformat(today) - datetime.fromisoformat(lp)).days
+                except Exception:
+                    pass
+            binges.append({
+                "song_name": r["song_name"],
+                "artist_name": r["artist_name"],
+                "binge_score": round(r["binge_score"], 3),
+                "play_count": r["play_count"],
+                "skip_rate": r["skip_rate"],
+                "days_since_played": days,
+            })
+
+        # Top artists by play count (from plays table for accuracy)
+        artist_rows = conn.execute("""
+            SELECT s.artist_name,
+                   COUNT(*) AS play_count,
+                   ROUND(AVG(CASE WHEN p.inferred_skip = 'skip' THEN 1.0 ELSE 0.0 END), 3) AS skip_rate,
+                   COUNT(DISTINCT p.song_id) AS unique_songs
+            FROM plays p
+            JOIN songs s ON s.song_id = p.song_id
+            WHERE p.inferred_skip IN ('skip', 'partial', 'full')
+            GROUP BY s.artist_name
+            ORDER BY play_count DESC
+            LIMIT 10
+        """).fetchall()
+        top_artists = [
+            {
+                "artist_name": r["artist_name"],
+                "play_count": r["play_count"],
+                "skip_rate": r["skip_rate"],
+                "unique_songs": r["unique_songs"],
+            }
+            for r in artist_rows
+        ]
+
+        return JSONResponse({
+            "favorites": favorites,
+            "most_skipped": most_skipped,
+            "binges": binges,
+            "top_artists": top_artists,
+        })
+    finally:
+        conn.close()
+
+
 # ── API: stats ────────────────────────────────────────────────────────────────
 
 @app.get("/api/stats")
