@@ -519,11 +519,58 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in artist_rows
         ]
 
+        # Top playlists: sessions per playlist, queue skip rate, total songs queued
+        playlist_rows = conn.execute("""
+            WITH session_base AS (
+                SELECT
+                    q.playlist_id,
+                    COALESCE(qp.rolling_session_id, qp.push_id) AS session_id,
+                    COUNT(DISTINCT qp.push_id) * 10 AS total_queued
+                FROM queue_pushes qp
+                JOIN queues q ON q.queue_id = qp.queue_id
+                WHERE qp.mode = 'rolling' AND qp.skips_inferred_at IS NOT NULL
+                GROUP BY q.playlist_id, session_id
+            ),
+            qs_counts AS (
+                SELECT COALESCE(qp2.rolling_session_id, qp2.push_id) AS session_id,
+                       COUNT(*) AS qs_n
+                FROM queue_skips qs
+                JOIN queue_pushes qp2 ON qp2.push_id = qs.push_id
+                WHERE qp2.mode = 'rolling'
+                GROUP BY session_id
+            )
+            SELECT
+                sb.playlist_id,
+                p.playlist_name,
+                COUNT(DISTINCT sb.session_id) AS num_sessions,
+                SUM(sb.total_queued) AS total_queued,
+                COALESCE(SUM(qsc.qs_n), 0) AS total_qs,
+                ROUND(
+                    CAST(COALESCE(SUM(qsc.qs_n), 0) AS REAL) / SUM(sb.total_queued),
+                    3
+                ) AS skip_rate
+            FROM session_base sb
+            JOIN playlists p ON p.playlist_id = sb.playlist_id
+            LEFT JOIN qs_counts qsc ON qsc.session_id = sb.session_id
+            GROUP BY sb.playlist_id
+            ORDER BY num_sessions DESC
+        """).fetchall()
+        top_playlists = [
+            {
+                "playlist_name": r["playlist_name"],
+                "num_sessions": r["num_sessions"],
+                "total_queued": r["total_queued"],
+                "skip_rate": r["skip_rate"],
+            }
+            for r in playlist_rows
+        ]
+
         return JSONResponse({
             "favorites": favorites,
             "most_skipped": most_skipped,
             "binges": binges,
             "top_artists": top_artists,
+            "top_playlists": top_playlists,
         })
     finally:
         conn.close()

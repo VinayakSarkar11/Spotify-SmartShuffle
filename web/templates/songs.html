@@ -45,6 +45,17 @@
     </div>
   </div>
 
+  <!-- Top playlists -->
+  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
+    <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+      <span class="text-purple-400">♫</span> Playlists
+      <span class="ml-auto text-xs text-gray-500 font-normal">by sessions run</span>
+    </h2>
+    <div id="playlists-list" class="space-y-2">
+      <p class="text-gray-500 text-sm">Loading…</p>
+    </div>
+  </div>
+
   <!-- Current binges -->
   <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
     <h2 class="text-sm font-semibold text-white mb-1 flex items-center gap-2">
@@ -122,6 +133,22 @@ function artistCard(a) {
     </div>`;
 }
 
+function playlistRow(pl) {
+  const skipPct = Math.round((pl.skip_rate ?? 0) * 100);
+  const skipColor = pl.skip_rate <= 0.15 ? 'text-green-400' : pl.skip_rate <= 0.30 ? 'text-yellow-400' : 'text-red-400';
+  return `
+    <div class="flex items-center gap-3 py-2 border-b border-gray-800 last:border-0">
+      <div class="flex-1 min-w-0">
+        <p class="text-sm text-white truncate">${pl.playlist_name}</p>
+      </div>
+      <div class="flex items-center gap-4 flex-shrink-0 text-right">
+        <span class="text-xs text-gray-500 font-mono">${pl.num_sessions} sessions</span>
+        <span class="text-xs text-gray-500 font-mono">${pl.total_queued} queued</span>
+        <span class="text-xs font-mono ${skipColor}">${skipPct}% skip</span>
+      </div>
+    </div>`;
+}
+
 async function load() {
   try {
     const r = await fetch('/api/songs/stats');
@@ -141,6 +168,11 @@ async function load() {
     document.getElementById('artists-list').innerHTML =
       d.top_artists.map(a => artistCard(a)).join('');
 
+    document.getElementById('playlists-list').innerHTML =
+      d.top_playlists.length
+        ? d.top_playlists.map(p => playlistRow(p)).join('')
+        : '<p class="text-gray-500 text-sm">No playlist sessions yet.</p>';
+
     if (d.binges.length) {
       document.getElementById('binges-list').innerHTML = d.binges.map(s => bingeRow(s)).join('');
     } else {
@@ -148,7 +180,7 @@ async function load() {
         '<p class="text-gray-500 text-sm">No active binges right now.</p>';
     }
   } catch (e) {
-    ['favorites-list','skipped-list','artists-list','binges-list'].forEach(id => {
+    ['favorites-list','skipped-list','artists-list','playlists-list','binges-list'].forEach(id => {
       document.getElementById(id).innerHTML = `<p class="text-red-400 text-sm">Error: ${e.message}</p>`;
     });
   }

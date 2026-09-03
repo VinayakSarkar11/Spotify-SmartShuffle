@@ -1187,7 +1187,11 @@ def compute_artist_completion_rates(df: pd.DataFrame) -> dict:
 
     Returns: {artist_name: {comp_rate, n_unique, confidence}}
     """
-    known = df[df["inferred_skip"].isin({"full", "partial", "skip"})].copy()
+    # Only queue plays have reliable skip inference — manual/browse listening
+    # has ambiguous gaps that don't cleanly map to skipping intent.
+    _queued_sources = {"smartshuffle_queued", "random_baseline_queued"}
+    queue_df = df[df["play_source"].isin(_queued_sources)] if "play_source" in df.columns else df
+    known = queue_df[queue_df["inferred_skip"].isin({"full", "partial", "skip"})].copy()
     if known.empty:
         return {}
 
