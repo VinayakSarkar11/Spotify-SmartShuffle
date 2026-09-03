@@ -421,7 +421,7 @@ async def api_songs_stats(user: dict = Depends(current_user)):
         # queue_plays: songs actually started via smartshuffle/random_baseline queues.
         # This matches the session-level skip metric and reflects real preference.
         song_stats_rows = conn.execute("""
-            WITH queue_plays AS (
+            WITH song_plays AS (
                 SELECT p.song_id,
                        s.song_name, s.artist_name,
                        COUNT(*) AS plays_n,
@@ -432,24 +432,24 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
                 GROUP BY p.song_id
             ),
-            queue_skips AS (
-                SELECT qs.song_id, COUNT(*) AS qs_n
-                FROM queue_skips qs
-                GROUP BY qs.song_id
+            song_qs AS (
+                SELECT song_id, COUNT(*) AS qs_n
+                FROM queue_skips
+                GROUP BY song_id
             )
             SELECT
-                qp.song_name, qp.artist_name, qp.song_id,
-                qp.plays_n,
-                COALESCE(qsk.qs_n, 0) AS qs_n,
-                qp.plays_n + COALESCE(qsk.qs_n, 0) AS total_exposures,
+                sp.song_name, sp.artist_name, sp.song_id,
+                sp.plays_n,
+                COALESCE(sq.qs_n, 0) AS qs_n,
+                sp.plays_n + COALESCE(sq.qs_n, 0) AS total_exposures,
                 ROUND(
-                    CAST(COALESCE(qsk.qs_n, 0) AS REAL)
-                    / (qp.plays_n + COALESCE(qsk.qs_n, 0)),
+                    CAST(COALESCE(sq.qs_n, 0) AS REAL)
+                    / (sp.plays_n + COALESCE(sq.qs_n, 0)),
                     3
                 ) AS skip_rate,
-                qp.last_played
-            FROM queue_plays qp
-            LEFT JOIN queue_skips qsk ON qsk.song_id = qp.song_id
+                sp.last_played
+            FROM song_plays sp
+            LEFT JOIN song_qs sq ON sq.song_id = sp.song_id
         """).fetchall()
 
         # Favorites: min 5 total exposures, lowest skip rate, then most plays
@@ -517,8 +517,8 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             ),
             artist_qs AS (
                 SELECT s.artist_name, COUNT(*) AS qs_n
-                FROM queue_skips qs
-                JOIN songs s ON s.song_id = qs.song_id
+                FROM queue_skips q
+                JOIN songs s ON s.song_id = q.song_id
                 GROUP BY s.artist_name
             )
             SELECT
