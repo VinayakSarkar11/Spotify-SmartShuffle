@@ -81,6 +81,21 @@
     </div>
     <div class="space-y-6" id="target-axes"></div>
 
+    <!-- Subgenre quick-target presets — filtered to songs that actually exist in this playlist -->
+    <div id="subgenre-row" class="hidden mt-4 flex flex-wrap gap-2"></div>
+
+    <!-- Refresh queue — always visible while a session is active -->
+    <div id="flush-row" class="hidden mt-4 pt-4 border-t border-gray-800 flex items-center gap-3 flex-wrap">
+      <p class="text-xs text-gray-500 flex-1">Keep the current song playing; replace everything after it with a fresh batch.</p>
+      <button id="flush-btn" onclick="flushQueue()"
+              class="shrink-0 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 font-medium
+                     px-5 py-2 rounded-full transition-colors border border-gray-700
+                     disabled:opacity-40 disabled:cursor-not-allowed">
+        ↺ Refresh queue
+      </button>
+      <div id="flush-status" class="text-xs w-full hidden" style="color:#6b7280"></div>
+    </div>
+
     <!-- Retarget controls — shown once sliders are adjusted -->
     <div id="retarget-bar" class="hidden mt-6 pt-5 border-t border-gray-800 flex items-center gap-4 flex-wrap">
       <div class="flex-1 text-sm">
@@ -161,6 +176,75 @@ function axisLabel(axis, val) {
   if (axis === "content") return labelFor(val, CONTENT_LABELS);
   if (axis === "melodic") return labelFor(val, MELODIC_LABELS);
   return labelFor(val, BPM_LABELS);
+}
+
+// ── Subgenre presets ─────────────────────────────────────────────────────────
+// Each entry defines a point in vibe space.  Only presets where enough songs
+// in the current playlist pool clear the gaussian fit threshold are shown.
+const SUBGENRE_PRESETS = [
+  // Rap / Hip-hop
+  { label: "Trap",        content:  0.60, melodic:  0.60, bpm:  0.50 },
+  { label: "Drill",       content:  0.85, melodic:  0.80, bpm:  0.25 },
+  { label: "Phonk",       content:  0.65, melodic:  0.45, bpm: -0.30 },
+  { label: "Boom bap",    content:  0.15, melodic:  0.55, bpm: -0.10 },
+  { label: "Melodic rap", content:  0.00, melodic:  0.15, bpm:  0.20 },
+  { label: "Conscious",   content: -0.65, melodic:  0.45, bpm: -0.05 },
+  { label: "Cloud rap",   content: -0.55, melodic:  0.25, bpm: -0.60 },
+  // R&B / Soul
+  { label: "R&B",         content:  0.05, melodic: -0.60, bpm:  0.20 },
+  { label: "Alt R&B",     content: -0.45, melodic: -0.65, bpm: -0.15 },
+  { label: "Neo-soul",    content: -0.60, melodic: -0.80, bpm: -0.55 },
+  // Pop
+  { label: "Dance-pop",   content:  0.10, melodic: -0.40, bpm:  0.72 },
+  { label: "Hyperpop",    content:  0.45, melodic: -0.20, bpm:  0.90 },
+  { label: "Indie pop",   content: -0.35, melodic: -0.40, bpm:  0.30 },
+  // Other
+  { label: "Afrobeats",   content:  0.40, melodic: -0.05, bpm:  0.42 },
+  { label: "Club",        content:  0.55, melodic:  0.20, bpm:  0.72 },
+  { label: "Indie",       content: -0.50, melodic: -0.05, bpm:  0.00 },
+];
+const MIN_PRESET_SONGS = 5;  // minimum songs in pool that must fit a preset to show it
+
+function renderSubgenrePresets() {
+  const row = document.getElementById('subgenre-row');
+  if (!row || !_poolVibes.length) return;
+
+  const matching = SUBGENRE_PRESETS.filter(sg => countFitting(sg) >= MIN_PRESET_SONGS);
+  if (!matching.length) { row.classList.add('hidden'); return; }
+
+  row.innerHTML = matching.map(sg => `
+    <button onclick="selectSubgenre(${JSON.stringify(sg)})"
+            class="subgenre-btn text-xs px-3 py-1.5 rounded-full border border-gray-700
+                   bg-gray-800 text-gray-300 hover:border-gray-500 hover:text-white
+                   transition-colors"
+            data-label="${sg.label}">
+      ${sg.label}
+    </button>`).join('');
+  row.classList.remove('hidden');
+}
+
+function selectSubgenre(sg) {
+  _draftTarget = { content: sg.content, melodic: sg.melodic, bpm: sg.bpm };
+
+  for (const ax of ['content', 'melodic', 'bpm']) {
+    const s = document.getElementById(`slider-${ax}`);
+    if (s) { s.min = -1; s.max = 1; s.step = 0.01; s.value = _draftTarget[ax]; }
+    const lbl = document.getElementById(`lbl-${ax}`);
+    if (lbl) lbl.textContent = axisLabel(ax, _draftTarget[ax]);
+  }
+
+  // Highlight the active preset button
+  document.querySelectorAll('.subgenre-btn').forEach(b => {
+    const active = b.dataset.label === sg.label;
+    b.classList.toggle('border-spotify',    active);
+    b.classList.toggle('text-spotify',      active);
+    b.classList.toggle('border-gray-700',  !active);
+    b.classList.toggle('text-gray-300',    !active);
+  });
+
+  // Trigger the same fit-count + retarget bar logic as manual slider input
+  onSliderInput('content', _draftTarget.content);
+  updateSliderLimits();
 }
 
 // ── Axis display names ───────────────────────────────────────────────────────
@@ -408,9 +492,15 @@ async function loadQueue() {
 
     const refill = d.last_refill_at
       ? new Date(d.last_refill_at).toLocaleString()
-      : 'unknown';
+      : 'just started';
+    // Build playlist label: for union pools reconstruct "Union: A + B" from _playlists.
+    const _srcIds = (d.source_playlist_id || '').split(',').map(s => s.trim()).filter(Boolean);
+    const _srcNames = _srcIds.map(id => (_playlists.find(p => p.playlist_id === id) || {}).playlist_name).filter(Boolean);
+    const playlistLabel = _srcNames.length > 1
+      ? `Union: ${_srcNames.join(' + ')}`
+      : (_srcNames[0] || d.playlist_name || 'Unknown playlist');
     document.getElementById('queue-subtitle').textContent =
-      `${d.playlist_name || 'Unknown playlist'} · last refill ${refill}`;
+      `${playlistLabel} · last refill ${refill}`;
 
     // Time bucket
     const TB_LABELS = { morning: 'Morning', afternoon: 'Afternoon', late_night: 'Late night' };
@@ -437,26 +527,24 @@ async function loadQueue() {
     const axesEl = document.getElementById('target-axes');
     const base   = d.base_target;
     const eff    = d.effective_target;
-    if (base && eff) {
-      _sessionLoaded = true;
-      // Initialise draft from effective target (may include session drift)
-      _baseTarget  = { content: eff.content, melodic: eff.melodic, bpm: eff.bpm };
-      // Manual override only applies when there's an active session — otherwise
-      // the queue was replanned and the override is stale.
-      if (d.target_override) {
-        _baseTarget = { ...d.target_override };
-      }
-      _draftTarget = { ..._baseTarget };
-
-      axesEl.innerHTML = ["content","melodic","bpm"]
-        .map(ax => renderSliderAxis(ax, _draftTarget[ax], eff[ax]))
-        .join('');
-
-      // Compute valid drag ranges from pool (async-safe: pool already loaded)
-      if (_poolVibes.length) updateSliderLimits();
-    } else {
-      axesEl.innerHTML = '<div class="text-sm text-gray-600">No vibe target found for this playlist.</div>';
+    // Show sliders regardless of whether a vibe target exists.
+    // Fall back to centre (0,0,0) if no target has been learned yet for this playlist.
+    _sessionLoaded = true;
+    const _eff = eff || { content: 0, melodic: 0, bpm: 0 };
+    _baseTarget  = { content: _eff.content, melodic: _eff.melodic, bpm: _eff.bpm };
+    if (d.target_override) {
+      _baseTarget = { ...d.target_override };
     }
+    _draftTarget = { ..._baseTarget };
+
+    axesEl.innerHTML = ["content","melodic","bpm"]
+      .map(ax => renderSliderAxis(ax, _draftTarget[ax], _eff[ax]))
+      .join('');
+
+    if (_poolVibes.length) { updateSliderLimits(); renderSubgenrePresets(); }
+
+    // Show refresh-queue row whenever there is an active session
+    document.getElementById('flush-row').classList.toggle('hidden', !d.session_push_id);
 
     // Song list
     const listEl = document.getElementById('song-list');
@@ -467,10 +555,18 @@ async function loadQueue() {
     _songs = d.songs || [];
     listEl.innerHTML = _songs.map(s => renderSong(s, base, eff)).join('');
 
-    // Pre-select current source playlist in the dropdown
+    // Pre-select current source playlist(s) in the dropdown.
     if (d.source_playlist_id && _playlists.length) {
-      const p = _playlists.find(x => x.playlist_id === d.source_playlist_id);
-      if (p) selectPlaylist(p.playlist_id, p.playlist_name, p.n_tracks);
+      const srcIds = (d.source_playlist_id).split(',').map(s => s.trim()).filter(Boolean);
+      if (srcIds.length === 1) {
+        const p = _playlists.find(x => x.playlist_id === srcIds[0]);
+        if (p) selectPlaylist(p.playlist_id, p.playlist_name, p.n_tracks);
+      } else {
+        // Union pool — select all matching IDs without closing the dropdown.
+        _selectedIds = new Set(srcIds.filter(id => _playlists.some(p => p.playlist_id === id)));
+        _updateDropdownLabel();
+        renderDropdownItems();
+      }
     }
 
   } catch (e) {
@@ -564,13 +660,10 @@ function onSliderInput(axis, rawVal) {
   const statEl = document.getElementById('retarget-status');
   if (statEl) statEl.classList.add('hidden');
 
-  // Live-update per-song vibe badges to reflect current slider position
-  _songs.forEach(song => {
-    const wrap = document.getElementById(`song-${song.position}-fit`);
-    if (!wrap || !song.vibe) return;
-    const { content: vc, melodic: vm, bpm: vb } = song.vibe;
-    if (vc == null || vm == null || vb == null) return;
-    wrap.innerHTML = fitBadge(avgFit(vc, vm, vb, _draftTarget, _vibe_sigmas));
+  // Clear subgenre highlight — manual drag invalidates any preset selection
+  document.querySelectorAll('.subgenre-btn').forEach(b => {
+    b.classList.remove('border-spotify', 'text-spotify');
+    b.classList.add('border-gray-700', 'text-gray-300');
   });
 }
 
@@ -583,6 +676,11 @@ function resetTarget() {
     if (lbl) lbl.textContent = axisLabel(ax, _draftTarget[ax]);
   }
   document.getElementById('retarget-bar').classList.add('hidden');
+  // Clear any active subgenre highlight
+  document.querySelectorAll('.subgenre-btn').forEach(b => {
+    b.classList.remove('border-spotify', 'text-spotify');
+    b.classList.add('border-gray-700', 'text-gray-300');
+  });
   updateSliderLimits();
 }
 
@@ -625,9 +723,9 @@ async function applyRetarget() {
   }
 }
 
-// ── Custom dropdown ───────────────────────────────────────────────────────────
-let _playlists  = [];
-let _selectedId = null;
+// ── Custom dropdown (multi-select union pool) ─────────────────────────────────
+let _playlists   = [];
+let _selectedIds = new Set();  // union pool: set of selected playlist IDs
 
 function toggleDropdown() {
   const list    = document.getElementById('dd-list');
@@ -637,17 +735,23 @@ function toggleDropdown() {
   chevron.style.transform = open ? '' : 'rotate(180deg)';
 }
 
-function selectPlaylist(id, name, tracks) {
-  _selectedId = id;
-  document.getElementById('dd-label').textContent = `${name}`;
-  document.getElementById('dd-list').classList.add('hidden');
-  document.getElementById('dd-chevron').style.transform = '';
+function _updateDropdownLabel() {
+  const sel = _playlists.filter(p => _selectedIds.has(p.playlist_id));
+  let label;
+  if (sel.length === 0)       label = 'Select playlist…';
+  else if (sel.length === 1)  label = sel[0].playlist_name;
+  else                        label = `Union: ${sel.map(p => p.playlist_name).join(' + ')}`;
+  document.getElementById('dd-label').textContent = label;
+}
 
-  // Rebuild list to update active highlight
+function selectPlaylist(id, name, tracks) {
+  // Legacy single-select path (used on load / from rolling state restore).
+  // Does NOT close the dropdown — let the user keep selecting for union pools.
+  _selectedIds = new Set([id]);
+  _updateDropdownLabel();
   renderDropdownItems();
 
-  // Pre-populate sliders from the playlist's learned target so the user can
-  // adjust them before hitting Start — only when no active session is loaded.
+  // Pre-populate sliders from the playlist's learned target.
   const pl = _playlists.find(p => p.playlist_id === id);
   if (pl?.vibe_target) {
     _baseTarget  = { ...pl.vibe_target };
@@ -662,32 +766,63 @@ function selectPlaylist(id, name, tracks) {
   }
 }
 
+function togglePlaylistSelection(id) {
+  if (_selectedIds.has(id)) {
+    if (_selectedIds.size > 1) _selectedIds.delete(id);  // keep at least one
+  } else {
+    _selectedIds.add(id);
+  }
+  _updateDropdownLabel();
+  renderDropdownItems();
+
+  // If single selection, update sliders
+  if (_selectedIds.size === 1) {
+    const pl = _playlists.find(p => _selectedIds.has(p.playlist_id));
+    if (pl?.vibe_target) {
+      _baseTarget  = { ...pl.vibe_target };
+      _draftTarget = { ...pl.vibe_target };
+      const axesEl = document.getElementById('target-axes');
+      if (axesEl) {
+        axesEl.innerHTML = ['content','melodic','bpm']
+          .map(ax => renderSliderAxis(ax, _draftTarget[ax], pl.vibe_target[ax]))
+          .join('');
+        if (_poolVibes.length) updateSliderLimits();
+      }
+    }
+  }
+}
+
 function renderDropdownItems() {
   const list = document.getElementById('dd-list');
   list.innerHTML = _playlists.map(p => {
-    const active = p.playlist_id === _selectedId;
+    const active = _selectedIds.has(p.playlist_id);
     return `
-      <li data-id="${p.playlist_id}" data-name="${p.playlist_name.replace(/"/g,'&quot;')}" data-tracks="${p.n_tracks}"
-          onclick="onPlaylistClick(this)"
-          class="flex items-center justify-between px-4 py-3 cursor-pointer
+      <li data-id="${p.playlist_id}"
+          onclick="event.stopPropagation(); togglePlaylistSelection('${p.playlist_id}')"
+          class="flex items-center gap-3 px-4 py-3 cursor-pointer
                  transition-colors ${active ? 'bg-gray-700/60' : 'hover:bg-gray-700/40'}">
-        <span class="text-sm font-medium ${active ? 'text-white' : 'text-gray-200'}">${p.playlist_name}</span>
-        <span class="text-xs ml-4 shrink-0 ${active ? 'text-spotify' : 'text-gray-500'}">${p.n_tracks} tracks</span>
+        <span class="w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center
+                     ${active ? 'bg-spotify border-spotify' : 'border-gray-600'}">
+          ${active ? '<svg class="w-3 h-3" fill="none" stroke="black" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>' : ''}
+        </span>
+        <span class="text-sm font-medium flex-1 ${active ? 'text-white' : 'text-gray-200'}">${p.playlist_name}</span>
+        <span class="text-xs shrink-0 ${active ? 'text-spotify' : 'text-gray-500'}">${p.n_tracks}</span>
       </li>`;
   }).join('');
 }
 
-function onPlaylistClick(el) {
-  selectPlaylist(el.dataset.id, el.dataset.name, parseInt(el.dataset.tracks));
-}
-
-// Close dropdowns on outside click
+// Close dropdowns on outside click.
+// Use composedPath() instead of contains(e.target): renderDropdownItems() rebuilds
+// the list HTML synchronously inside the <li> onclick, detaching the clicked element
+// from the DOM before the event can bubble. composedPath() is frozen at dispatch time
+// and correctly includes dd-wrapper even after the target is removed.
 document.addEventListener('click', e => {
-  if (!document.getElementById('dd-wrapper')?.contains(e.target)) {
+  const path = e.composedPath();
+  if (!path.some(el => el.id === 'dd-wrapper')) {
     document.getElementById('dd-list')?.classList.add('hidden');
     document.getElementById('dd-chevron').style.transform = '';
   }
-  if (!document.getElementById('dev-wrapper')?.contains(e.target)) {
+  if (!path.some(el => el.id === 'dev-wrapper')) {
     document.getElementById('dev-list')?.classList.add('hidden');
     document.getElementById('dev-chevron').style.transform = '';
   }
@@ -771,8 +906,8 @@ async function loadPlaylists() {
 async function startQueue() {
   const btn  = document.getElementById('start-btn');
   const stat = document.getElementById('start-status');
-  const plId = _selectedId;
-  if (!plId) return;
+  const plIds = [..._selectedIds].join(',');
+  if (!plIds) return;
 
   btn.disabled = true;
   btn.textContent = 'Generating queue…';
@@ -784,7 +919,7 @@ async function startQueue() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        playlist_id: plId,
+        playlist_id: plIds,
         device_id: _selectedDev?.device_id || '',
         local_hour: new Date().getHours(),
         // Only send a manual target when the user moved the sliders
@@ -849,8 +984,62 @@ async function resumeQueue() {
   }
 }
 
+async function flushQueue() {
+  const btn    = document.getElementById('flush-btn');
+  const statEl = document.getElementById('flush-status');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  statEl.textContent = 'Generating fresh batch…';
+  statEl.style.color = '#6b7280';
+  statEl.classList.remove('hidden');
+
+  try {
+    const res = await fetch('/api/queue/flush', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_id: _selectedDev?.device_id || '',
+        local_hour: new Date().getHours(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statEl.textContent = (data.error || `Error ${res.status}`) + (data.detail ? ` — ${data.detail.slice(-300)}` : '');
+      statEl.style.color = '#ef4444';
+    } else {
+      statEl.textContent = 'Queue refreshed — current song continues.';
+      statEl.style.color = '#1DB954';
+      btn.textContent = '↺ Refreshed';
+      document.getElementById('song-list').innerHTML =
+        '<div class="text-sm text-gray-600 py-8 text-center">Loading new queue…</div>';
+      setTimeout(loadQueue, 2000);
+    }
+  } catch (e) {
+    statEl.textContent = 'Network error';
+    statEl.style.color = '#ef4444';
+  } finally {
+    if (btn.textContent === 'Refreshing…') btn.textContent = '↺ Refresh queue';
+    btn.disabled = false;
+  }
+}
+
 loadPlaylists();
 loadDevices();
 loadQueue();
+
+// Auto-refresh when rolling is active: poll every 20s so the song list
+// and batch count stay current as the watcher adds refills.
+let _pollTimer = null;
+function _schedulePoll() {
+  clearTimeout(_pollTimer);
+  _pollTimer = setTimeout(async () => {
+    await loadQueue();
+    // Keep polling only while the session is still active
+    const enabled = document.getElementById('queue-status').style.color === 'rgb(29, 185, 84)';
+    if (enabled) _schedulePoll();
+  }, 20000);
+}
+// Kick off the first poll after initial load settles
+setTimeout(_schedulePoll, 20000);
 </script>
 {% endblock %}

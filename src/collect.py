@@ -86,11 +86,23 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_plays_source    ON plays(play_source);
         CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at);
         CREATE INDEX IF NOT EXISTS idx_plays_song_id   ON plays(song_id);
+
+        CREATE TABLE IF NOT EXISTS play_stats (
+            id                INTEGER PRIMARY KEY CHECK (id = 1),
+            total_plays_ever  INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO play_stats (id, total_plays_ever) VALUES (1, 0);
     """)
     try:
         conn.execute("ALTER TABLE playlists ADD COLUMN snapshot_id TEXT")
     except Exception:
         pass
+    # Seed total_plays_ever from current plays table if it's still 0 (first run after migration)
+    current = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+    conn.execute("""
+        UPDATE play_stats SET total_plays_ever = MAX(total_plays_ever, ?)
+        WHERE id = 1 AND total_plays_ever = 0
+    """, (current,))
     conn.commit()
 
 
@@ -335,6 +347,11 @@ def collect_recently_played(conn):
                 WHERE played_at = ? AND inferred_skip = 'unknown'
             """, (p["play_duration_ms"], p["inferred_skip"], p["played_at"]))
 
+    if inserted > 0:
+        conn.execute(
+            "UPDATE play_stats SET total_plays_ever = total_plays_ever + ? WHERE id = 1",
+            (inserted,)
+        )
     conn.commit()
     return inserted
 
@@ -821,6 +838,9 @@ def attribute_plays_to_queues(conn):
         return 0   # queue_pushes table may not exist yet
 
     attributed = 0
+
+    # Per-push attribution: covers non-rolling pushes and keeps a narrow 2h window
+    # for individual rolling pushes (belt-and-suspenders for songs played soon after push).
     for push_id, _, algorithm, pushed_at, songs_json in pushes:
         song_ids = [s["song_id"] for s in json.loads(songs_json)]
         if not song_ids:
@@ -834,6 +854,43 @@ def attribute_plays_to_queues(conn):
               AND REPLACE(SUBSTR(played_at, 1, 19), 'T', ' ') <= datetime(?, '+2 hours')
               AND (play_source IS NULL OR play_source NOT LIKE '%_queued')
         """, [f"{algorithm}_queued"] + song_ids + [pushed_dt, pushed_dt]).rowcount
+        attributed += rows
+
+    # Rolling-session attribution: uses the full session window so songs from early
+    # pushes played late in a long session (beyond their individual 2h window) still
+    # get attributed. Covers manual plays, playlist plays, and anything else in the window.
+    rolling_sessions = conn.execute("""
+        SELECT COALESCE(rolling_session_id, push_id) AS session_id,
+               algorithm,
+               MIN(pushed_at) AS session_start,
+               MAX(pushed_at) AS session_end
+        FROM queue_pushes
+        WHERE mode = 'rolling'
+        GROUP BY session_id
+    """).fetchall()
+    for session_id, algorithm, session_start, session_end in rolling_sessions:
+        song_rows = conn.execute("""
+            SELECT q.songs FROM queue_pushes qp
+            JOIN queues q ON qp.queue_id = q.queue_id
+            WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
+        """, (session_id,)).fetchall()
+        session_songs = list({
+            s["song_id"]
+            for (songs_json,) in song_rows
+            for s in json.loads(songs_json)
+        })
+        if not session_songs:
+            continue
+        start_dt = _sqlite_ts(session_start)
+        end_dt   = _sqlite_ts(session_end)
+        ph = ",".join("?" * len(session_songs))
+        rows = conn.execute(f"""
+            UPDATE plays SET play_source = ?
+            WHERE song_id IN ({ph})
+              AND REPLACE(SUBSTR(played_at, 1, 19), 'T', ' ') >= ?
+              AND REPLACE(SUBSTR(played_at, 1, 19), 'T', ' ') <= datetime(?, '+2 hours')
+              AND (play_source IS NULL OR play_source NOT LIKE '%_queued')
+        """, [f"{algorithm}_queued"] + session_songs + [start_dt, end_dt]).rowcount
         attributed += rows
 
     if attributed:
@@ -851,9 +908,25 @@ def attribute_plays_to_queues(conn):
     for push_id, algorithm, pushed_at, songs_json in completed:
         analyze_queue_session(conn, push_id, algorithm, pushed_at, songs_json)
 
-    # Infer skips for newly closed sessions only (skip already-inferred ones).
+    # Re-open any push/session where inference ran but recorded 0 skips.
+    # Must run before the closed/ready queries so re-opened sessions are picked up
+    # in the same call.  Covers both rolling sessions (keyed by COALESCE) and
+    # standalone full-mode pushes.  Once a session has real skip entries the NOT IN
+    # clause excludes it, making this a no-op for sessions that already have skips.
+    conn.execute("""
+        UPDATE queue_pushes
+        SET skips_inferred_at = NULL
+        WHERE skips_inferred_at IS NOT NULL
+          AND COALESCE(rolling_session_id, push_id) NOT IN (
+              SELECT DISTINCT push_id FROM queue_skips WHERE queue_position IS NOT NULL
+          )
+    """)
+    conn.commit()
+
+    # Infer skips for all closed sessions with skips_inferred_at IS NULL —
+    # includes newly closed sessions AND any that were just re-opened above.
     # Rolling sessions are combined into one session queue before inference;
-    # full-mode pushes are processed individually as before.
+    # full-mode pushes are processed individually.
     closed = conn.execute("""
         SELECT qp.push_id, qp.algorithm, qp.pushed_at, q.songs,
                qp.mode, COALESCE(qp.rolling_session_id, qp.push_id) AS session_id
@@ -1167,9 +1240,10 @@ def main():
     for skip, count in skip_breakdown:
         print(f"    {skip or 'unknown'}: {count}")
 
-    purged = purge_old_plays(conn)
-    if purged:
-        print(f"\n  Purged {purged} play records older than 90 days.")
+    if not _args.plays_only:
+        purged = purge_old_plays(conn)
+        if purged:
+            print(f"\n  Purged {purged} play records older than 90 days.")
 
     conn.close()
     print(f"\nDone: {now_iso()}")

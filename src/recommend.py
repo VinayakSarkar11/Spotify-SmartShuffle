@@ -648,9 +648,25 @@ def load_songs(conn, playlist_id=None) -> pd.DataFrame:
     """
     Joins playlist_tracks → songs → song_scores → song_tags.
     Songs with no play history get fatigue=0, binge=0, coverage_debt=0 (unheard).
+    playlist_id may be a single ID string or a list for union-pool sessions.
     """
-    where  = "WHERE pt.playlist_id = ?" if playlist_id else ""
-    params = (playlist_id,) if playlist_id else ()
+    if isinstance(playlist_id, list):
+        if len(playlist_id) > 1:
+            ph     = ",".join("?" * len(playlist_id))
+            where  = f"WHERE pt.playlist_id IN ({ph})"
+            params = tuple(playlist_id)
+        elif playlist_id:
+            where  = "WHERE pt.playlist_id = ?"
+            params = (playlist_id[0],)
+        else:
+            where  = ""
+            params = ()
+    elif playlist_id:
+        where  = "WHERE pt.playlist_id = ?"
+        params = (playlist_id,)
+    else:
+        where  = ""
+        params = ()
 
     df = pd.read_sql_query(f"""
         SELECT
@@ -690,7 +706,7 @@ def load_songs(conn, playlist_id=None) -> pd.DataFrame:
     df["top_tags"]     = df["top_tags"].apply(lambda x: json.loads(x) if isinstance(x, str) else [])
     df["energy_score"] = pd.to_numeric(df["energy_score"], errors="coerce").fillna(0.0)
     df["stale"]        = df["stale"].astype(bool)
-    return df.drop_duplicates(subset=["song_id", "playlist_id"])
+    return df.drop_duplicates(subset=["song_id"])
 
 # ── Phase 3: vibe clustering ──────────────────────────────────────────────────
 
@@ -1571,20 +1587,32 @@ def main():
         conn.close()
         return
 
-    # Resolve playlist: explicit arg → energy-matched default → error
-    playlist_id   = None
+    # Resolve playlist: explicit arg → energy-matched default → error.
+    # --playlist accepts a single ID/name or comma-separated IDs for a union pool.
+    playlist_id   = None   # str (single) | list[str] (union)
     playlist_name = None
     if args.playlist:
-        row = conn.execute(
-            "SELECT playlist_id, playlist_name FROM playlists "
-            "WHERE playlist_name LIKE ? OR playlist_id = ? LIMIT 1",
-            (f"%{args.playlist}%", args.playlist)
-        ).fetchone()
-        if not row:
-            print(f"ERROR: playlist '{args.playlist}' not found. Use --list to see options.")
-            conn.close()
-            return
-        playlist_id, playlist_name = row
+        raw_ids = [p.strip() for p in args.playlist.split(",") if p.strip()]
+        resolved_ids   = []
+        resolved_names = []
+        for raw in raw_ids:
+            row = conn.execute(
+                "SELECT playlist_id, playlist_name FROM playlists "
+                "WHERE playlist_name LIKE ? OR playlist_id = ? LIMIT 1",
+                (f"%{raw}%", raw)
+            ).fetchone()
+            if not row:
+                print(f"ERROR: playlist '{raw}' not found. Use --list to see options.")
+                conn.close()
+                return
+            resolved_ids.append(row[0])
+            resolved_names.append(row[1])
+        if len(resolved_ids) == 1:
+            playlist_id   = resolved_ids[0]
+            playlist_name = resolved_names[0]
+        else:
+            playlist_id   = resolved_ids          # list → union pool
+            playlist_name = "Union (" + " + ".join(resolved_names) + ")"
     else:
         # Default to the playlist the user has played most recently/frequently.
         # Playlist selection is the user's job — SmartShuffle only orders within it.
@@ -1634,9 +1662,14 @@ def main():
             df = df[~_too_recent]
             print(f"  {_n_recent} songs skipped (played within {_SAME_DAY_EXCLUDE_H:.0f}h)")
 
+    # For functions that need a single string ID: use comma-joined for union pools.
+    # For target lookups (energy/vibe), use the first playlist so defaults apply.
+    playlist_id_str     = ",".join(playlist_id) if isinstance(playlist_id, list) else playlist_id
+    playlist_id_target  = playlist_id[0] if isinstance(playlist_id, list) else playlist_id
+
     if args.algorithm == "random_baseline":
         baseline = generate_random_baseline(df, n=args.count)
-        save_random_baseline(conn, baseline, context, playlist_id)
+        save_random_baseline(conn, baseline, context, playlist_id_str)
         print(f"Random baseline: {len(baseline)} songs")
         conn.close()
         print("\nDone.")
@@ -1656,9 +1689,9 @@ def main():
             print(f"WARNING: --target '{args.target}' malformed, using learned target")
 
     print("\nGenerating queue (Phase 4)...")
-    ss_queue = generate_queue(df, context, n=args.count, conn=conn, playlist_id=playlist_id,
+    ss_queue = generate_queue(df, context, n=args.count, conn=conn, playlist_id=playlist_id_target,
                               target_vibe_override=target_override)
-    save_queue(conn, ss_queue, context, playlist_id)
+    save_queue(conn, ss_queue, context, playlist_id_str)
 
     print_queue(ss_queue, context, scores=args.scores)
 

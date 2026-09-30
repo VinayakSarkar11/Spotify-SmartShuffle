@@ -723,10 +723,13 @@ def _check_refill(
         phase34_cmd += ["--target", f"{c},{m},{b}"]
 
     try:
-        subprocess.run(phase34_cmd, check=True, capture_output=True, text=True, timeout=30)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        stderr = getattr(e, "stderr", "")[:200]
-        print(f"  [watcher] refill generation failed: {stderr}")
+        result = subprocess.run(phase34_cmd, check=True, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        print("  [watcher] refill generation timed out (120s)", flush=True)
+        return remaining
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "")[:400]
+        print(f"  [watcher] refill generation failed (rc={e.returncode}): {stderr}", flush=True)
         return remaining
 
     # Fetch newly generated songs and append to playlist
@@ -774,6 +777,16 @@ def _check_refill(
               f"  session_push_id={session_push_id}", flush=True)
     except Exception as _e:
         print(f"  [watcher] ERROR recording refill push: {_e}", flush=True)
+
+    # Guard against race condition: push.py may have written fresh state while
+    # subprocess.run(recommend.py) was blocking (up to 120s). If session_push_id
+    # changed, a new queue was started — don't overwrite its clean state with our
+    # stale accumulated session_songs.
+    current_rolling = _read_rolling_state()
+    if current_rolling.get("session_push_id") != rolling.get("session_push_id"):
+        print("  [watcher] session changed during refill — discarding stale state write",
+              flush=True)
+        return remaining
 
     rolling["last_refill_at"] = now
     rolling["session_songs"]  = rolling.get("session_songs", []) + new_songs

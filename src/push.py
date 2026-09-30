@@ -462,15 +462,23 @@ def play(queue_id: int | None = None, algorithm: str | None = None,
 
 def _start_watcher():
     """Kill any running watcher and start a fresh one for the new session."""
-    if os.path.exists(WATCHER_PID_PATH):
-        try:
-            with open(WATCHER_PID_PATH) as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, signal.SIGTERM)
-        except (ProcessLookupError, ValueError, OSError):
-            pass
+    # When called from the web app, SS_DB_PATH points to the user-specific DB.
+    # Store the PID beside that DB so _is_watcher_alive() in app.py can find it.
+    _db = os.getenv("SS_DB_PATH")
+    pid_path = os.path.join(
+        os.path.dirname(_db) if _db else os.path.join(DIR, "data"),
+        "watcher.pid",
+    )
+
+    try:
+        with open(pid_path) as f:
+            old_pid = int(f.read().strip())
+        os.kill(old_pid, signal.SIGTERM)
+    except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
+        pass
 
     log_path = os.path.join(DIR, "logs", "watcher.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     # Strip SS_ACCESS_TOKEN so the watcher uses SpotifyOAuth (auto-refresh).
     # The short-lived injected token would cause refills to silently fail after 1 h.
     watcher_env = os.environ.copy()
@@ -486,7 +494,7 @@ def _start_watcher():
         stderr=subprocess.STDOUT,
         env=watcher_env,
     )
-    with open(WATCHER_PID_PATH, "w") as f:
+    with open(pid_path, "w") as f:
         f.write(str(proc.pid))
     print(f"Session watcher started (PID {proc.pid}, log: watcher.log)")
 

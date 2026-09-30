@@ -65,6 +65,7 @@ SESSION_GAP_MINUTES  = 30
 MIN_SESSION_PLAYS    = 2
 BINGE_END_GAP_DAYS   = 2   # close a binge episode after this many days with no plays
 BINGE_MAX_DAYS       = 14  # hard cap: episodes older than this are closed regardless of plays
+BINGE_RECENCY_DAYS   = 5   # song must have a play within this window to stay an active binge
 
 # Evergreen scoring — framework is computed but stays zeroed until we have sufficient
 # play history to reliably distinguish consistent favorites from fading binges.
@@ -968,6 +969,12 @@ def compute_fatigue_scores(df: pd.DataFrame, conn) -> dict:
         # Hard cap: episode >= BINGE_MAX_DAYS old (open or just closed) → song is integrated
         if song_id in age_capped_songs:
             binge_score = 0.0
+
+        # Recency guard: no play in the last BINGE_RECENCY_DAYS → binge has cooled off
+        if binge_score > 0:
+            _days_since_last = (now_ts - row["last_played"]).total_seconds() / 86400
+            if _days_since_last > BINGE_RECENCY_DAYS:
+                binge_score = 0.0
 
         # Skip penalty: each skip in the binge window reduces score by 25% (4 skips → 0).
         # Binge songs are almost never skipped; skips are strong evidence it's not a real binge.

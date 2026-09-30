@@ -4,7 +4,7 @@
 
   <div class="mb-8">
     <h1 class="text-2xl font-semibold text-white">Song Analysis</h1>
-    <p class="text-gray-400 text-sm mt-1">Skip rate = queue-skips ÷ (queue-skips + plays). Manual and browse listening excluded.</p>
+    <p class="text-gray-400 text-sm mt-1">Skip rates are only calculated for SmartShuffle sessions.</p>
   </div>
 
   <!-- Top row: favorites + most skipped -->
@@ -38,7 +38,7 @@
   <div class="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
     <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
       <span class="text-blue-400">★</span> Top Artists
-      <span class="ml-auto text-xs text-gray-500 font-normal">by total plays</span>
+      <span class="ml-auto text-xs text-gray-500 font-normal">by plays · queue listens only</span>
     </h2>
     <div id="artists-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <p class="text-gray-500 text-sm col-span-full">Loading…</p>
@@ -61,7 +61,7 @@
     <h2 class="text-sm font-semibold text-white mb-1 flex items-center gap-2">
       <span class="text-yellow-400">⚡</span> Current Binges
     </h2>
-    <p class="text-xs text-gray-500 mb-4">Songs with an active binge score — you've been playing these on repeat recently.</p>
+    <p class="text-xs text-gray-500 mb-4">Songs with binge score &gt; 0 · ordered by binge score.</p>
     <div id="binges-list">
       <p class="text-gray-500 text-sm">Loading…</p>
     </div>
@@ -99,24 +99,23 @@ function songRow(song, rankColor) {
 }
 
 function bingeRow(song) {
-  const pct = Math.round(song.binge_score * 100);
-  const barW = Math.min(100, pct * 4);
   const daysAgo = song.days_since_played != null
     ? (song.days_since_played === 0 ? 'today' : `${song.days_since_played}d ago`)
     : '';
+  const bingePct = Math.round((song.binge_score ?? 0) * 100);
   return `
-    <div class="flex items-center gap-4 py-2.5 border-b border-gray-800 last:border-0">
+    <div class="flex items-center gap-3 py-2 border-b border-gray-800 last:border-0">
       <div class="flex-1 min-w-0">
         <p class="text-sm text-white truncate">${song.song_name}</p>
         <p class="text-xs text-gray-500 truncate">${song.artist_name}</p>
-        <div class="mt-1.5 h-1 bg-gray-800 rounded-full w-48 max-w-full">
-          <div class="h-1 bg-yellow-400 rounded-full" style="width:${barW}%"></div>
+        <div class="mt-1 h-1 w-full bg-gray-700 rounded-full overflow-hidden">
+          <div class="h-full bg-yellow-400 rounded-full" style="width:${bingePct}%"></div>
         </div>
       </div>
-      <div class="flex-shrink-0 text-right">
-        <p class="text-sm font-mono text-yellow-400">${pct}%</p>
-        <p class="text-xs text-gray-500">${song.play_count} plays</p>
-        ${daysAgo ? `<p class="text-xs text-gray-600">${daysAgo}</p>` : ''}
+      <div class="flex items-center gap-3 flex-shrink-0 text-right">
+        <span class="text-xs text-yellow-400 font-mono w-12 text-right">${bingePct}%</span>
+        <span class="text-xs text-gray-500 font-mono w-14 text-right">${song.play_count} plays</span>
+        ${daysAgo ? `<span class="text-xs text-gray-600 w-14 text-right">${daysAgo}</span>` : ''}
       </div>
     </div>`;
 }
@@ -177,7 +176,7 @@ async function load() {
       document.getElementById('binges-list').innerHTML = d.binges.map(s => bingeRow(s)).join('');
     } else {
       document.getElementById('binges-list').innerHTML =
-        '<p class="text-gray-500 text-sm">No active binges right now.</p>';
+        '<p class="text-gray-500 text-sm">No songs with binge score &gt; 0 yet.</p>';
     }
   } catch (e) {
     ['favorites-list','skipped-list','artists-list','playlists-list','binges-list'].forEach(id => {

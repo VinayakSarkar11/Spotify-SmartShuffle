@@ -269,7 +269,9 @@ def _global_stats() -> dict:
         for db_path in db_paths:
             conn = sqlite3.connect(db_path)
             try:
-                total_plays += conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+                total_plays += conn.execute(
+                    "SELECT MAX(total_plays_ever, (SELECT COUNT(*) FROM plays)) FROM play_stats WHERE id = 1"
+                ).fetchone()[0] or conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
                 for (sid,) in conn.execute(
                     "SELECT song_id FROM songs WHERE vibe_content IS NOT NULL"
                 ).fetchall():
@@ -304,10 +306,13 @@ async def api_collect(user: dict = Depends(current_user)):
     if r.returncode != 0:
         return JSONResponse({"error": "collect failed",
                              "detail": (r.stdout + r.stderr)[-1000:]}, status_code=500)
-    # Pull updated play count to return
+    # Pull updated play count to return (cumulative — never decreases after purges)
     conn = _db(user["user_id"])
     try:
-        total_plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        row = conn.execute(
+            "SELECT total_plays_ever FROM play_stats WHERE id = 1"
+        ).fetchone()
+        total_plays = row[0] if row else conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     finally:
         conn.close()
     global _global_stats_at
@@ -430,11 +435,13 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY p.song_id
             ),
             song_qs AS (
                 SELECT song_id, COUNT(*) AS qs_n
                 FROM queue_skips
+                WHERE datetime(inferred_at) >= datetime('now', '-30 days')
                 GROUP BY song_id
             )
             SELECT
@@ -456,7 +463,8 @@ async def api_songs_stats(user: dict = Depends(current_user)):
         fav_rows = sorted(
             [r for r in song_stats_rows if r["total_exposures"] >= 5],
             key=lambda r: (r["skip_rate"], -r["plays_n"])
-        )[:10]
+        )[:5]
+        fav_ids = {r["song_id"] for r in fav_rows}
         favorites = [
             {
                 "song_name": r["song_name"],
@@ -468,11 +476,11 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in fav_rows
         ]
 
-        # Most skipped: min 5 total exposures, highest skip rate
+        # Most skipped: min 5 total exposures, highest skip rate, exclude favorites
         skip_rows = sorted(
-            [r for r in song_stats_rows if r["total_exposures"] >= 5],
+            [r for r in song_stats_rows if r["total_exposures"] >= 5 and r["song_id"] not in fav_ids],
             key=lambda r: (-r["skip_rate"], -r["qs_n"])
-        )[:10]
+        )[:5]
         most_skipped = [
             {
                 "song_name": r["song_name"],
@@ -484,7 +492,7 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in skip_rows
         ]
 
-        # Active binges: binge_score > 0 (binge_score is computed separately, keep as-is)
+        # Active binges: any song with binge_score > 0 (computed by score.py)
         binge_rows = conn.execute("""
             SELECT ss.song_name, ss.artist_name, ss.binge_score, ss.play_count, ss.last_played
             FROM song_scores ss
@@ -503,7 +511,7 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in binge_rows
         ]
 
-        # Top artists: same queue_skips / (queue_skips + plays) formula
+        # Top artists: plays only from last 30 days, ordered by plays then skip rate
         artist_rows = conn.execute("""
             WITH artist_plays AS (
                 SELECT s.artist_name,
@@ -513,12 +521,14 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             ),
             artist_qs AS (
                 SELECT s.artist_name, COUNT(*) AS qs_n
                 FROM queue_skips q
                 JOIN songs s ON s.song_id = q.song_id
+                WHERE datetime(q.inferred_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             )
             SELECT
@@ -534,8 +544,8 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 ap.unique_songs
             FROM artist_plays ap
             LEFT JOIN artist_qs aqs ON aqs.artist_name = ap.artist_name
-            WHERE ap.plays_n + COALESCE(aqs.qs_n, 0) >= 10
-            ORDER BY total_exposures DESC
+            WHERE ap.plays_n >= 5
+            ORDER BY ap.plays_n DESC, skip_rate ASC
             LIMIT 10
         """).fetchall()
         top_artists = [
@@ -548,40 +558,51 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in artist_rows
         ]
 
-        # Top playlists: sessions per playlist, queue skip rate, total songs queued
-        playlist_rows = conn.execute("""
-            WITH session_base AS (
-                SELECT
-                    q.playlist_id,
-                    COALESCE(qp.rolling_session_id, qp.push_id) AS session_id,
-                    COUNT(DISTINCT qp.push_id) * 10 AS total_queued
+        # Top playlists: skip rate using same formula and session filter as overall
+        # (play_skip_n + qs_n) / (plays_n + qs_n), plays_n >= _QUALIFY_PLAYS sessions only
+        playlist_rows = conn.execute(f"""
+            WITH {_ROLLING_PLAYS_CTE},
+            session_info AS (
+                SELECT COALESCE(qp.rolling_session_id, qp.push_id) AS session_id,
+                       q.playlist_id,
+                       SUM(json_array_length(q.songs)) AS total_queued
                 FROM queue_pushes qp
                 JOIN queues q ON q.queue_id = qp.queue_id
-                WHERE qp.mode = 'rolling' AND qp.skips_inferred_at IS NOT NULL
-                GROUP BY q.playlist_id, session_id
+                WHERE qp.mode = 'rolling' AND qp.algorithm = 'smartshuffle'
+                GROUP BY session_id, q.playlist_id
             ),
-            qs_counts AS (
+            session_plays AS (
+                SELECT session_id,
+                       COUNT(*) AS plays_n,
+                       SUM(CASE WHEN inferred_skip = 'skip' THEN 1 ELSE 0 END) AS play_skip_n
+                FROM rolling_plays
+                GROUP BY session_id
+                HAVING COUNT(*) >= {_QUALIFY_PLAYS}
+            ),
+            session_qs AS (
                 SELECT COALESCE(qp2.rolling_session_id, qp2.push_id) AS session_id,
                        COUNT(*) AS qs_n
                 FROM queue_skips qs
                 JOIN queue_pushes qp2 ON qp2.push_id = qs.push_id
-                WHERE qp2.mode = 'rolling'
+                WHERE qp2.mode = 'rolling' AND qp2.algorithm = 'smartshuffle'
+                  AND qs.queue_position IS NOT NULL
                 GROUP BY session_id
             )
             SELECT
-                sb.playlist_id,
-                p.playlist_name,
-                COUNT(DISTINCT sb.session_id) AS num_sessions,
-                SUM(sb.total_queued) AS total_queued,
-                COALESCE(SUM(qsc.qs_n), 0) AS total_qs,
+                si.playlist_id,
+                pl.playlist_name,
+                COUNT(DISTINCT si.session_id)  AS num_sessions,
+                SUM(si.total_queued)           AS total_queued,
                 ROUND(
-                    CAST(COALESCE(SUM(qsc.qs_n), 0) AS REAL) / SUM(sb.total_queued),
+                    CAST(SUM(sp.play_skip_n) + COALESCE(SUM(sqs.qs_n), 0) AS REAL)
+                    / NULLIF(SUM(sp.plays_n) + COALESCE(SUM(sqs.qs_n), 0), 0),
                     3
                 ) AS skip_rate
-            FROM session_base sb
-            JOIN playlists p ON p.playlist_id = sb.playlist_id
-            LEFT JOIN qs_counts qsc ON qsc.session_id = sb.session_id
-            GROUP BY sb.playlist_id
+            FROM session_info si
+            JOIN session_plays sp ON sp.session_id = si.session_id
+            JOIN playlists pl ON pl.playlist_id = si.playlist_id
+            LEFT JOIN session_qs sqs ON sqs.session_id = si.session_id
+            GROUP BY si.playlist_id
             ORDER BY num_sessions DESC
         """).fetchall()
         top_playlists = [
@@ -638,7 +659,8 @@ async def api_stats(user: dict = Depends(current_user)):
                              "rolling_skip_rate": None, "qs_n": 0, "plays_n": 0,
                              "trend": [], "vibe_dists": {"vibe_content": [], "vibe_melodic": [], "vibe_bpm": []}, "history": []})
 
-    total_plays  = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+    _ps_row = conn.execute("SELECT total_plays_ever FROM play_stats WHERE id = 1").fetchone()
+    total_plays  = _ps_row[0] if _ps_row else conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     scored_songs = conn.execute(
         "SELECT COUNT(*) FROM songs WHERE vibe_content IS NOT NULL"
     ).fetchone()[0]
@@ -659,24 +681,39 @@ async def api_stats(user: dict = Depends(current_user)):
     rolling_sessions  = qual_row["session_count"]    if qual_row else 0
     avg_session_songs = qual_row["avg_session_songs"] if qual_row else None
 
-    play_row = conn.execute(f"""
-        WITH {_ROLLING_PLAYS_CTE}
-        SELECT COUNT(*) AS n,
-               SUM(CASE WHEN inferred_skip='skip' THEN 1 ELSE 0 END) AS skip_n
-        FROM rolling_plays
-    """).fetchone()
-    qs_row = conn.execute("""
-        SELECT COUNT(*) AS qs_n
-        FROM queue_skips qs
-        JOIN queue_pushes qp ON qs.push_id = qp.push_id
-        WHERE qp.algorithm = 'smartshuffle'
-          AND qp.mode = 'rolling'
-          AND qs.queue_position IS NOT NULL
+    # Compute overall skip rate using the same session-quality filter as the per-session
+    # history table (plays_n >= _QUALIFY_PLAYS), so the aggregate is consistent with the
+    # per-session breakdown rather than inflated by zero-attribution sessions.
+    agg_row = conn.execute(f"""
+        WITH {_ROLLING_PLAYS_CTE},
+        session_plays AS (
+            SELECT session_id,
+                   COUNT(*) AS plays_n,
+                   SUM(CASE WHEN inferred_skip='skip' THEN 1 ELSE 0 END) AS skip_n
+            FROM rolling_plays
+            GROUP BY session_id
+            HAVING plays_n >= {_QUALIFY_PLAYS}
+        ),
+        session_qs AS (
+            SELECT COALESCE(qp.rolling_session_id, qp.push_id) AS session_id,
+                   COUNT(*) AS qs_n
+            FROM queue_skips qs
+            JOIN queue_pushes qp ON qs.push_id = qp.push_id
+            WHERE qp.algorithm = 'smartshuffle'
+              AND qp.mode = 'rolling'
+              AND qs.queue_position IS NOT NULL
+            GROUP BY session_id
+        )
+        SELECT SUM(sp.plays_n)                        AS n,
+               SUM(sp.skip_n)                         AS skip_n,
+               SUM(COALESCE(sqs.qs_n, 0))             AS qs_n
+        FROM session_plays sp
+        LEFT JOIN session_qs sqs ON sqs.session_id = sp.session_id
     """).fetchone()
 
-    n      = (play_row["n"]      if play_row else 0) or 0
-    skip_n = (play_row["skip_n"] if play_row else 0) or 0
-    qs_n   = (qs_row["qs_n"]     if qs_row   else 0) or 0
+    n      = (agg_row["n"]      if agg_row else 0) or 0
+    skip_n = (agg_row["skip_n"] if agg_row else 0) or 0
+    qs_n   = (agg_row["qs_n"]   if agg_row else 0) or 0
     total  = n + qs_n
     rolling_skip_rate = round((skip_n + qs_n) / total, 3) if total else None
 
@@ -797,13 +834,21 @@ async def api_stats(user: dict = Depends(current_user)):
         LIMIT 10
     """).fetchall()
 
+    # Pre-fetch name map for union pool resolution before closing connection.
+    _pl_name_map = {r["playlist_id"]: r["playlist_name"]
+                    for r in conn.execute("SELECT playlist_id, playlist_name FROM playlists").fetchall()}
     conn.close()
 
     history_out = []
     for r in history:
         row   = dict(r)
-        pl_id = row.get("playlist_id")
+        pl_id = row.get("playlist_id") or ""
         row["vibe_target"] = vibe_targets.get(pl_id) if pl_id else None
+        # Fix "Unknown" for union pool sessions (pl_id = "id1,id2").
+        if "," in pl_id:
+            ids   = [p.strip() for p in pl_id.split(",") if p.strip()]
+            names = [_pl_name_map[i] for i in ids if i in _pl_name_map]
+            row["playlist_name"] = ("Union: " + " + ".join(names)) if names else "Unknown"
         history_out.append(row)
 
     return JSONResponse({
@@ -971,7 +1016,14 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
         vp = {}
 
     _vibe_sigmas_baseline = vp.get("vibe_sigmas", {}).get(tb, {"content": 0.30, "melodic": 0.30, "bpm": 0.30})
-    base_target = _load_vibe_targets().get(source_pl_id)
+    # Union-pool sessions store source_playlist_id as "id1,id2,…"; average individual targets.
+    _all_targets = _load_vibe_targets()
+    _pl_ids_list = [p.strip() for p in (source_pl_id or "").split(",") if p.strip()]
+    _individual   = [_all_targets[p] for p in _pl_ids_list if p in _all_targets]
+    base_target   = (
+        {ax: sum(t[ax] for t in _individual) / len(_individual) for ax in ("content", "melodic", "bpm")}
+        if _individual else None
+    )
 
     lp_path = os.path.join(ROOT, "data", "learned_params.json")
     try:
@@ -1034,25 +1086,27 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
                     raw_songs.extend(json.loads(row["songs"]))
                 songs_out = _song_explanations(raw_songs, effective_target, vibe_sigmas, weights)
 
-        if source_pl_id:
+        if _pl_ids_list:
+            ph = ",".join("?" * len(_pl_ids_list))
             r = conn.execute(
-                "SELECT playlist_name FROM playlists WHERE playlist_id = ?",
-                (source_pl_id,)
+                f"SELECT playlist_name FROM playlists WHERE playlist_id IN ({ph}) LIMIT 1",
+                _pl_ids_list,
             ).fetchone()
             if r:
                 playlist_name = r["playlist_name"].strip()
 
         pool_vibes = []
-        if source_pl_id:
-            pv_rows = conn.execute("""
+        if _pl_ids_list:
+            ph = ",".join("?" * len(_pl_ids_list))
+            pv_rows = conn.execute(f"""
                 SELECT s.vibe_content AS c, s.vibe_melodic AS m, s.vibe_bpm AS b
                 FROM playlist_tracks pt
                 JOIN songs s ON s.song_id = pt.song_id
-                WHERE pt.playlist_id = ?
+                WHERE pt.playlist_id IN ({ph})
                   AND s.vibe_content IS NOT NULL
                   AND s.vibe_melodic IS NOT NULL
                   AND s.vibe_bpm IS NOT NULL
-            """, (source_pl_id,)).fetchall()
+            """, _pl_ids_list).fetchall()
             pool_vibes = [[round(r["c"], 3), round(r["m"], 3), round(r["b"], 3)] for r in pv_rows]
     finally:
         conn.close()
@@ -1158,17 +1212,19 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
     except (FileNotFoundError, json.JSONDecodeError):
         vibe_sigmas = {"content": 0.30, "melodic": 0.30, "bpm": 0.30}
 
+    _rt_pl_ids = [p.strip() for p in (source_pl_id or "").split(",") if p.strip()]
     conn = _db(user_id)
     try:
-        rows = conn.execute("""
+        _rt_ph = ",".join("?" * len(_rt_pl_ids))
+        rows = conn.execute(f"""
             SELECT s.vibe_content, s.vibe_melodic, s.vibe_bpm
             FROM playlist_tracks pt
             JOIN songs s ON s.song_id = pt.song_id
-            WHERE pt.playlist_id = ?
+            WHERE pt.playlist_id IN ({_rt_ph})
               AND s.vibe_content IS NOT NULL
               AND s.vibe_melodic IS NOT NULL
               AND s.vibe_bpm IS NOT NULL
-        """, (source_pl_id,)).fetchall()
+        """, _rt_pl_ids).fetchall()
     finally:
         conn.close()
 
@@ -1221,7 +1277,9 @@ async def api_queue_retarget(request: Request, user: dict = Depends(current_user
     target_str = f"{new_target['content']},{new_target['melodic']},{new_target['bpm']}"
     env        = _subprocess_env(user_id)
 
-    if not validate_playlist_id(source_pl_id or ""):
+    # Accept comma-separated IDs for union pool sessions
+    _pl_ids = [p.strip() for p in (source_pl_id or "").split(",") if p.strip()]
+    if not _pl_ids or not all(validate_playlist_id(p) for p in _pl_ids):
         return JSONResponse({"error": "Invalid playlist ID"}, status_code=400)
 
     try:
@@ -1286,7 +1344,9 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
         return JSONResponse({"error": "No active rolling session"}, status_code=404)
 
     source_pl_id = rqs.get("source_playlist_id")
-    if not validate_playlist_id(source_pl_id or ""):
+    # Accept comma-separated IDs for union pool sessions
+    _pl_ids = [p.strip() for p in (source_pl_id or "").split(",") if p.strip()]
+    if not _pl_ids or not all(validate_playlist_id(p) for p in _pl_ids):
         return JSONResponse({"error": "Invalid playlist ID in rolling state"}, status_code=400)
 
     src_dir = os.path.join(ROOT, "src")
@@ -1344,6 +1404,178 @@ async def api_queue_resume(request: Request, user: dict = Depends(current_user))
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/queue/flush")
+async def api_queue_flush(request: Request, user: dict = Depends(current_user)):
+    """
+    Replace the upcoming Spotify queue with a fresh batch while keeping the current
+    song playing.  Grabs the current track + seek position, rebuilds the push playlist
+    as [current_track, ...new_songs], then restores playback at the exact position.
+    """
+    import time as _time
+
+    user_id   = user["user_id"]
+    body      = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    try:
+        local_hour: int | None = int(body["local_hour"])
+    except (KeyError, TypeError, ValueError):
+        local_hour = None
+
+    paths    = get_user_paths(user_id)
+    rqs_path = paths["rolling_state"]
+    try:
+        with open(rqs_path) as f:
+            rqs = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return JSONResponse({"error": "No active rolling session"}, status_code=404)
+
+    source_pl_id    = rqs.get("source_playlist_id")
+    push_pl_id      = rqs.get("playlist_id")
+    algorithm       = rqs.get("algorithm", "smartshuffle")
+    session_push_id = rqs.get("session_push_id")
+    target_override = rqs.get("target_override")
+    effective_device = device_id or rqs.get("device_id") or ""
+
+    _pl_ids = [p.strip() for p in (source_pl_id or "").split(",") if p.strip()]
+    if not _pl_ids or not all(validate_playlist_id(p) for p in _pl_ids):
+        return JSONResponse({"error": "Invalid playlist ID"}, status_code=400)
+    if not push_pl_id:
+        return JSONResponse({"error": "No push playlist in session state"}, status_code=400)
+
+    # Capture current Spotify playback so we can restore it after the playlist swap
+    sp = spotify_for_user(user_id)
+    current_uri = None
+    progress_ms = 0
+    try:
+        pb = sp.current_playback()
+        if pb and pb.get("item"):
+            current_uri  = f"spotify:track:{pb['item']['id']}"
+            progress_ms  = pb.get("progress_ms") or 0
+    except Exception:
+        pass
+
+    # Build exclude list from all songs ever queued in this session
+    exclude_ids: list[str] = []
+    if session_push_id:
+        conn = _db(user_id)
+        try:
+            rows = conn.execute("""
+                SELECT q.songs FROM queue_pushes qp
+                JOIN queues q ON q.queue_id = qp.queue_id
+                WHERE COALESCE(qp.rolling_session_id, qp.push_id) = ?
+            """, (session_push_id,)).fetchall()
+            for r in rows:
+                for s in json.loads(r["songs"]):
+                    exclude_ids.append(s["song_id"])
+        finally:
+            conn.close()
+
+    # Generate a fresh batch using the current effective target
+    src_dir = os.path.join(ROOT, "src")
+    env     = _subprocess_env(user_id)
+    env["SS_TIME_BUCKET"] = _time_bucket(local_hour)
+
+    rec_cmd = [sys.executable, os.path.join(src_dir, "recommend.py"),
+               "--playlist", source_pl_id, "--count", "10"]
+    if exclude_ids:
+        rec_cmd += ["--exclude", ",".join(dict.fromkeys(exclude_ids))]
+    if target_override:
+        try:
+            rec_cmd += [f"--target={float(target_override['content'])},"
+                        f"{float(target_override['melodic'])},"
+                        f"{float(target_override['bpm'])}"]
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    try:
+        r1 = subprocess.run(rec_cmd, capture_output=True, text=True, timeout=120, cwd=ROOT, env=env)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "Queue generation timed out"}, status_code=500)
+    if r1.returncode != 0:
+        return JSONResponse({"error": "Queue generation failed",
+                             "detail": (r1.stdout + r1.stderr)[-2000:]}, status_code=500)
+
+    # Fetch the just-generated queue
+    conn = _db(user_id)
+    try:
+        new_row = conn.execute(
+            "SELECT queue_id, songs FROM queues ORDER BY queue_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not new_row:
+        return JSONResponse({"error": "No queue generated"}, status_code=500)
+
+    new_queue_id = new_row["queue_id"]
+    new_songs    = json.loads(new_row["songs"])
+    new_uris     = [f"spotify:track:{s['song_id']}" for s in new_songs]
+
+    # Rebuild push playlist: current track first so playback is uninterrupted
+    playlist_uris = ([current_uri] if current_uri else []) + new_uris
+    push_pl_uri   = f"spotify:playlist:{push_pl_id}"
+    try:
+        sp.playlist_replace_items(push_pl_id, playlist_uris[:100])
+        for i in range(100, len(playlist_uris), 100):
+            sp.playlist_add_items(push_pl_id, playlist_uris[i:i + 100])
+        _time.sleep(1.5)
+    except Exception as e:
+        return JSONResponse({"error": f"Playlist update failed: {e}"}, status_code=500)
+
+    # Resume playback from current track at the same position
+    dev_kwarg = {"device_id": effective_device} if effective_device and validate_device_id(effective_device) else {}
+    try:
+        sp.start_playback(
+            **dev_kwarg,
+            context_uri=push_pl_uri,
+            offset={"uri": current_uri} if current_uri else {"position": 0},
+        )
+        _time.sleep(0.5)
+        if progress_ms > 0:
+            sp.seek_track(progress_ms + 1000, **dev_kwarg)
+    except Exception as e:
+        return JSONResponse({"error": f"Playback control failed: {e}"}, status_code=500)
+
+    # Record the push under the same rolling session
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = _db(user_id)
+    try:
+        conn.execute(
+            "INSERT INTO queue_pushes (queue_id, algorithm, pushed_at, mode, rolling_session_id)"
+            " VALUES (?,?,?,?,?)",
+            (new_queue_id, algorithm, now_iso, "rolling", session_push_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Preserve the played portion of the session (up to and including current song)
+    pre_flush_songs: list = []
+    try:
+        old_songs = rqs.get("session_songs", [])
+        if old_songs and current_uri:
+            current_id = current_uri.split(":")[-1]
+            for i, s in enumerate(old_songs):
+                if s.get("song_id") == current_id:
+                    pre_flush_songs = old_songs[: i + 1]
+                    break
+            else:
+                pre_flush_songs = old_songs
+        else:
+            pre_flush_songs = old_songs
+    except Exception:
+        pass
+
+    rqs["last_refill_at"] = now_iso
+    rqs["session_songs"]  = pre_flush_songs + new_songs
+    tmp = rqs_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rqs, f)
+    os.replace(tmp, rqs_path)
+
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/queue/start")
 async def api_queue_start(request: Request, user: dict = Depends(current_user)):
     user_id     = user["user_id"]
@@ -1358,8 +1590,11 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
 
     if not playlist_id:
         return JSONResponse({"error": "playlist_id required"}, status_code=400)
-    if not validate_playlist_id(playlist_id):
+    # Support union pool: comma-separated playlist IDs (e.g. "id1,id2")
+    playlist_ids = [p.strip() for p in playlist_id.split(",") if p.strip()]
+    if not playlist_ids or not all(validate_playlist_id(p) for p in playlist_ids):
         return JSONResponse({"error": "Invalid playlist ID"}, status_code=400)
+    playlist_id = ",".join(playlist_ids)
 
     src_dir = os.path.join(ROOT, "src")
     env     = _subprocess_env(user_id)
