@@ -556,17 +556,13 @@ async function loadQueue() {
     listEl.innerHTML = _songs.map(s => renderSong(s, base, eff)).join('');
 
     // Pre-select current source playlist(s) in the dropdown.
+    // Only update _selectedIds / label — sliders are already set above from
+    // target_override / effective_target and must not be reset here.
     if (d.source_playlist_id && _playlists.length) {
       const srcIds = (d.source_playlist_id).split(',').map(s => s.trim()).filter(Boolean);
-      if (srcIds.length === 1) {
-        const p = _playlists.find(x => x.playlist_id === srcIds[0]);
-        if (p) selectPlaylist(p.playlist_id, p.playlist_name, p.n_tracks);
-      } else {
-        // Union pool — select all matching IDs without closing the dropdown.
-        _selectedIds = new Set(srcIds.filter(id => _playlists.some(p => p.playlist_id === id)));
-        _updateDropdownLabel();
-        renderDropdownItems();
-      }
+      _selectedIds = new Set(srcIds.filter(id => _playlists.some(p => p.playlist_id === id)));
+      _updateDropdownLabel();
+      renderDropdownItems();
     }
 
   } catch (e) {
