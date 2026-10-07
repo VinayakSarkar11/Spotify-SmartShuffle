@@ -1,8 +1,8 @@
 # SmartShuffle
 
-**[Try it live](https://spotify-smartshuffle-production.up.railway.app/)**
+**[Try it live](https://spotify-smartshuffle-production.up.railway.app/)** with this link.
 
-A personalized music queue generator built on Spotify. Learns from your actual listening behavior -- what you skip, when you listen, which songs you've worn out -- and builds queues that fit the moment instead of randomizing it.
+A personalized queue generator that pays attention to what you actually want to listen to, rather than providing a random list of songs from your playlist
 
 ---
 
@@ -20,7 +20,7 @@ If Chill morning, Chill afternoon, and Chill evening have different vibes, you'd
 
 ## Results
 
-A/B test -- SS rolling vs. random baseline, sessions with at least 4 plays:
+A/B test: SS rolling vs. random baseline, sessions with at least 4 plays:
 
 | Algorithm | Sessions | Plays | Skip rate | Avg plays/session |
 |-----------|----------|-------|-----------|-------------------|
@@ -49,18 +49,18 @@ Spotify doesn't expose skip events directly, and it doesn't tell you whether you
 
 Each time the queue is built, every candidate song in your playlist gets a score. The highest-scoring songs that fit the current vibe go in.
 
-**Vibe match:** Songs are placed on three axes -- how rap vs. melodic they sound, how vocal vs. instrumental, and how chill vs. hype. The target vibe for the moment is learned from which songs you complete vs. skip in each listening context (late night, morning, afternoon). Songs closer to your current target score higher.
+**Vibe match:** Songs are placed on three axes: how melodic they are, the content of the lyrics, and how energetic they are. The target vibe for the moment is learned from which songs you complete vs. skip in each listening context (late night, morning, afternoon). Songs closer to your current target score higher.
 
-The allowed range around the target is asymmetric: the window is wider in the direction your taste has been drifting during the session, and tighter against it. If you've been moving toward more melodic songs, the algorithm gives itself room to follow but resists snapping back.
+The allowed range around the target is asymmetric: the window is wider in the direction your taste has been drifting during the session, and tighter against it. If you've been moving toward more melodic songs, the algorithm gives itself room to follow but resists snapping back to less melodic tracks.
 
-**Fatigue:** Every play counts against a song, with more recent plays penalized harder. This decays exponentially with a 14-day half-life, so a song you played six months ago has near-zero fatigue. Songs you consistently finish get a softer penalty than ones you sometimes skip -- the idea being that high play count on something you love isn't the same problem as high play count on something you're growing tired of.
+**Fatigue:** The more you play a song, the higher the fatigue penalty is, avoiding constant repetition of a few songs. This decays exponentially with a 14-day half-life, so a song you played six months ago has near-zero fatigue. Songs you consistently finish get a softer penalty than ones you sometimes skip, as those songs are your genuine favorites shouldn't get punished for getting played
 
-**Binge:** Sometimes you're obsessed with a song and play it constantly. SmartShuffle detects this and lowers the fatigue penalty while the obsession is active, so the song doesn't get suppressed just for having a high play count. Once the obsession fades -- play rate drops off, or you start skipping it -- normal fatigue kicks back in.
+**Binge:** Sometimes you're obsessed with a song and play it constantly. SmartShuffle detects this and lowers the fatigue penalty while the obsession is active, so the song doesn't get suppressed just for having a high play count. Once the obsession fades (play rate drops off, or you start skipping it) normal fatigue kicks back in.
 
 Binge detection requires a meaningful play count plus at least two of three signals that suggest it's a current fixation rather than a longtime favorite:
 - **New release:** if the album just came out, high play count almost certainly means you're into it now -- not that it's been a staple for years
 - **Newly added to your playlist:** same logic -- you just added it, so suddenly playing it a lot means active interest
-- **Manually sought out:** you went and found this song rather than letting it play through -- active intent, not passive exposure
+- **Manually sought out:** you went and found this song rather than letting it play through: active intent, not passive exposure
 
 This matters because a song you've loved for years will often have a high play count too. Binge detection only fires when the novelty signals are present. Songs without those signals -- longtime favorites you return to consistently over months -- are handled separately by evergreen scoring, which also reduces fatigue suppression but based on the long-term shape of play history rather than a recent spike.
 
