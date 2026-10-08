@@ -1660,3 +1660,18 @@ async def api_queue_start(request: Request, user: dict = Depends(current_user)):
         pass
 
     return JSONResponse({"ok": True, "stdout": r2.stdout[-1000:]})
+
+
+@app.get("/api/queue/watcher-log")
+async def api_watcher_log(user: dict = Depends(current_user)):
+    """Return the last 100 lines of the watcher log for the current user."""
+    log_path = os.path.join(ROOT, "logs", "watcher.log")
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+        tail = "".join(lines[-100:])
+    except FileNotFoundError:
+        tail = "(no watcher.log found)"
+    except OSError as e:
+        tail = f"(error reading log: {e})"
+    return JSONResponse({"log": tail})

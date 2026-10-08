@@ -816,11 +816,12 @@ function renderDropdownItems() {
 }
 
 // Close dropdowns on outside click.
-// Use composedPath() instead of contains(e.target): renderDropdownItems() rebuilds
-// the list HTML synchronously inside the <li> onclick, detaching the clicked element
-// from the DOM before the event can bubble. composedPath() is frozen at dispatch time
-// and correctly includes dd-wrapper even after the target is removed.
-document.addEventListener('click', e => {
+// Use mousedown (not click): mousedown fires before the <li> onclick mutates the DOM
+// via renderDropdownItems(), so composedPath() reliably sees the full path including
+// dd-wrapper. A click listener fires after innerHTML is rebuilt, at which point the
+// original target may be detached and event.stopPropagation() on the <li> can race
+// with the document handler depending on browser event order.
+document.addEventListener('mousedown', e => {
   const path = e.composedPath();
   if (!path.some(el => el.id === 'dd-wrapper')) {
     document.getElementById('dd-list')?.classList.add('hidden');

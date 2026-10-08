@@ -104,6 +104,7 @@ def _make_sp():
         redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI"),
         scope=SCOPE,
         cache_path=cache_path,
+        open_browser=False,
     ))
 
 
@@ -825,7 +826,9 @@ def watch(time_bucket: str, baseline_skip_rate: float, stop_event: threading.Eve
     _clear_state()
 
     print(f"  [watcher] started — bucket={time_bucket}"
-          f"  baseline_skip_rate={baseline_skip_rate:.1%}", flush=True)
+          f"  baseline_skip_rate={baseline_skip_rate:.1%}"
+          f"  db={DB_PATH}"
+          f"  rolling={ROLLING_STATE_PATH}", flush=True)
 
     last_remaining:    int | None = None  # for adaptive interval decisions
     standby:           bool       = False
