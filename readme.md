@@ -27,11 +27,11 @@ A/B test: SS rolling vs. random baseline, sessions with at least 4 plays:
 | SmartShuffle (rolling) | 34 | 682 | **26.4%** | **20.1** |
 | Random baseline | 14 | 174 | **45.7%** | **12.4** |
 
-**19.3pp lower skip rate. χ²=41.55, p<0.0001.** SS sessions average 62% more plays. Full breakdown in `docs/statistics.md`.
+**19.4pp lower skip rate. χ²=40.17, p<0.0001.** SS sessions average 61% more plays. Full breakdown in `docs/statistics.md`.
 
 The meaningful comparison is rolling mode because the system observes each batch of songs before generating the next -- it can adapt to live session behavior in a way that generating 180 songs upfront cannot.
 
-**Song coverage:** SmartShuffle surfaces more of your library -- 25.8% of playlist songs played at least once vs. 22.0% for random, with a higher unique-to-total play ratio week over week.
+**Song coverage:** SmartShuffle surfaces more of your library -- 35.3% of playlist songs played at least once vs. 25.6% for random, with a higher unique-to-total play ratio week over week.
 
 ---
 
