@@ -435,13 +435,11 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
-                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY p.song_id
             ),
             song_qs AS (
                 SELECT song_id, COUNT(*) AS qs_n
                 FROM queue_skips
-                WHERE datetime(inferred_at) >= datetime('now', '-30 days')
                 GROUP BY song_id
             )
             SELECT
@@ -521,14 +519,12 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
-                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             ),
             artist_qs AS (
                 SELECT s.artist_name, COUNT(*) AS qs_n
                 FROM queue_skips q
                 JOIN songs s ON s.song_id = q.song_id
-                WHERE datetime(q.inferred_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             )
             SELECT

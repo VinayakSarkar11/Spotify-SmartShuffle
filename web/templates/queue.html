@@ -473,6 +473,33 @@ function toggleSong(id) {
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
+function _renderSlidersFromSelection() {
+  // Populate sliders from the currently selected playlist's learned vibe target.
+  // Used when there is no active session so the user can preview/adjust before starting.
+  if (!_selectedIds.size || !_playlists.length) return;
+  const ids = [..._selectedIds];
+  const pls = ids.map(id => _playlists.find(p => p.playlist_id === id)).filter(Boolean);
+  if (!pls.length || !pls.every(p => p.vibe_target)) return;
+  // Average targets for union pools
+  const avg = {};
+  for (const ax of ['content','melodic','bpm']) {
+    avg[ax] = pls.reduce((s, p) => s + p.vibe_target[ax], 0) / pls.length;
+  }
+  _baseTarget  = { ...avg };
+  _draftTarget = { ...avg };
+  const axesEl = document.getElementById('target-axes');
+  if (axesEl) {
+    try {
+      axesEl.innerHTML = ['content','melodic','bpm']
+        .map(ax => renderSliderAxis(ax, avg[ax], avg[ax]))
+        .join('');
+      if (_poolVibes.length) { updateSliderLimits(); renderSubgenrePresets(); }
+    } catch (_e) {}
+  }
+  document.getElementById('drift-label').textContent = 'No active session — using playlist base target';
+  document.getElementById('time-bucket-label').textContent = '';
+}
+
 async function loadQueue() {
   const root = document.getElementById('queue-root');
   try {
@@ -481,6 +508,9 @@ async function loadQueue() {
       _sessionLoaded = false;
       const err = await res.json().catch(() => ({}));
       showError(err.error || `Error ${res.status}`);
+      // Still render sliders from the selected playlist so the user can see and
+      // adjust the vibe target before starting a queue.
+      _renderSlidersFromSelection();
       return;
     }
     const d = await res.json();
@@ -554,8 +584,10 @@ async function loadQueue() {
     // Show refresh-queue row whenever there is an active session
     document.getElementById('flush-row').classList.toggle('hidden', !d.session_push_id);
 
-    // Song list
+    // Song list — clear any prior error state first
+    document.getElementById('queue-error').classList.add('hidden');
     const listEl = document.getElementById('song-list');
+    listEl.classList.remove('hidden');
     if (!d.songs || d.songs.length === 0) {
       showError('No songs in the current queue push.');
       return;
@@ -580,7 +612,8 @@ async function loadQueue() {
 }
 
 function showError(msg) {
-  document.getElementById('target-card').classList.add('hidden');
+  // Keep target-card visible so vibe sliders show from the selected playlist
+  // even before a session starts. Only hide the song list.
   document.getElementById('song-list').classList.add('hidden');
   const errEl = document.getElementById('queue-error');
   errEl.classList.remove('hidden');
