@@ -72,6 +72,50 @@ def _is_watcher_alive(user_id: str) -> bool:
         return False
 
 
+def _restart_watcher(user_id: str) -> None:
+    """Spawn a fresh watcher for this user. Used to recover after a container restart."""
+    import signal as _signal
+    paths    = get_user_paths(user_id)
+    pid_path = os.path.join(os.path.dirname(paths["db"]), "watcher.pid")
+
+    try:
+        with open(pid_path) as f:
+            old_pid = int(f.read().strip())
+        os.kill(old_pid, _signal.SIGTERM)
+    except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
+        pass
+
+    src_dir  = os.path.join(ROOT, "src")
+    log_path = os.path.join(ROOT, "logs", "watcher.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    watcher_env = _subprocess_env(user_id)
+    watcher_env.pop("SS_ACCESS_TOKEN", None)
+
+    watcher_cmd = [sys.executable, "-u", os.path.join(src_dir, "watcher.py")]
+    proc = subprocess.Popen(
+        watcher_cmd,
+        start_new_session=True,
+        stdout=open(log_path, "a"),
+        stderr=subprocess.STDOUT,
+        env=watcher_env,
+    )
+    with open(pid_path, "w") as f:
+        f.write(str(proc.pid))
+
+    # Immediately sync plays so the restarted watcher has fresh data.
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.join(src_dir, "collect.py"), "--plays-only"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=_subprocess_env(user_id),
+        )
+    except Exception:
+        pass
+
+
 def _subprocess_env(user_id: str) -> dict:
     """Build env for subprocess calls: inject user's access token and paths."""
     paths      = get_user_paths(user_id)
@@ -1007,7 +1051,15 @@ async def api_queue(request: Request, user: dict = Depends(current_user)):
     except (FileNotFoundError, json.JSONDecodeError):
         return JSONResponse({"error": "No rolling queue state found"}, status_code=404)
 
-    enabled         = rqs.get("enabled", False) and _is_watcher_alive(user_id)
+    should_be_rolling = rqs.get("enabled", False)
+    alive             = _is_watcher_alive(user_id)
+    if should_be_rolling and not alive:
+        try:
+            _restart_watcher(user_id)
+            alive = True
+        except Exception:
+            pass
+    enabled         = should_be_rolling and alive
     playlist_id     = rqs.get("playlist_id")
     source_pl_id    = rqs.get("source_playlist_id")
     session_push_id = rqs.get("session_push_id")
