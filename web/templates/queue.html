@@ -849,21 +849,18 @@ function renderDropdownItems() {
 }
 
 // Close dropdowns on outside click.
-// Use mousedown (not click): mousedown fires before the <li> onclick mutates the DOM
-// via renderDropdownItems(), so composedPath() reliably sees the full path including
-// dd-wrapper. A click listener fires after innerHTML is rebuilt, at which point the
-// original target may be detached and event.stopPropagation() on the <li> can race
-// with the document handler depending on browser event order.
-document.addEventListener('mousedown', e => {
-  const path = e.composedPath();
-  if (!path.some(el => el.id === 'dd-wrapper')) {
-    document.getElementById('dd-list')?.classList.add('hidden');
-    document.getElementById('dd-chevron').style.transform = '';
-  }
-  if (!path.some(el => el.id === 'dev-wrapper')) {
-    document.getElementById('dev-list')?.classList.add('hidden');
-    document.getElementById('dev-chevron').style.transform = '';
-  }
+// Strategy: attach a mousedown stopPropagation handler directly on each dropdown
+// container element. This is more reliable than composedPath() checks because it
+// short-circuits at the container level — no matter what innerHTML mutations happen
+// inside, the event never reaches the document listener for clicks within the box.
+document.getElementById('dd-wrapper').addEventListener('mousedown', e => e.stopPropagation());
+document.getElementById('dev-wrapper').addEventListener('mousedown', e => e.stopPropagation());
+
+document.addEventListener('mousedown', () => {
+  document.getElementById('dd-list')?.classList.add('hidden');
+  document.getElementById('dd-chevron').style.transform = '';
+  document.getElementById('dev-list')?.classList.add('hidden');
+  document.getElementById('dev-chevron').style.transform = '';
 });
 
 // ── Device dropdown ───────────────────────────────────────────────────────────

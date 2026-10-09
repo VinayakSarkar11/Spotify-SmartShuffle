@@ -427,28 +427,37 @@ async def api_songs_stats(user: dict = Depends(current_user)):
         # This matches the session-level skip metric and reflects real preference.
         song_stats_rows = conn.execute("""
             WITH song_plays AS (
+                -- Count all queue plays (any inferred_skip that isn't unknown),
+                -- plus a soft-skip count (song was started but abandoned quickly).
+                -- skip_rate = (soft_skips + hard_skips) / (plays + hard_skips)
+                -- This matches the session-level formula so per-song and per-session
+                -- skip rates are computed on the same basis.
                 SELECT p.song_id,
                        s.song_name, s.artist_name,
                        COUNT(*) AS plays_n,
+                       SUM(CASE WHEN p.inferred_skip = 'skip' THEN 1 ELSE 0 END) AS soft_skip_n,
                        MAX(p.played_at) AS last_played
                 FROM plays p
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY p.song_id
             ),
             song_qs AS (
                 SELECT song_id, COUNT(*) AS qs_n
                 FROM queue_skips
+                WHERE datetime(inferred_at) >= datetime('now', '-30 days')
                 GROUP BY song_id
             )
             SELECT
                 sp.song_name, sp.artist_name, sp.song_id,
                 sp.plays_n,
+                sp.soft_skip_n,
                 COALESCE(sq.qs_n, 0) AS qs_n,
                 sp.plays_n + COALESCE(sq.qs_n, 0) AS total_exposures,
                 ROUND(
-                    CAST(COALESCE(sq.qs_n, 0) AS REAL)
+                    CAST(sp.soft_skip_n + COALESCE(sq.qs_n, 0) AS REAL)
                     / (sp.plays_n + COALESCE(sq.qs_n, 0)),
                     3
                 ) AS skip_rate,
@@ -457,9 +466,9 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             LEFT JOIN song_qs sq ON sq.song_id = sp.song_id
         """).fetchall()
 
-        # Favorites: min 5 total exposures, lowest skip rate, then most plays
+        # Favorites: min 3 plays, lowest skip rate, then most plays
         fav_rows = sorted(
-            [r for r in song_stats_rows if r["total_exposures"] >= 5],
+            [r for r in song_stats_rows if r["plays_n"] >= 3],
             key=lambda r: (r["skip_rate"], -r["plays_n"])
         )[:5]
         fav_ids = {r["song_id"] for r in fav_rows}
@@ -474,10 +483,10 @@ async def api_songs_stats(user: dict = Depends(current_user)):
             for r in fav_rows
         ]
 
-        # Most skipped: min 5 total exposures, highest skip rate, exclude favorites
+        # Most skipped: min 3 plays, highest skip rate, exclude favorites
         skip_rows = sorted(
-            [r for r in song_stats_rows if r["total_exposures"] >= 5 and r["song_id"] not in fav_ids],
-            key=lambda r: (-r["skip_rate"], -r["qs_n"])
+            [r for r in song_stats_rows if r["plays_n"] >= 3 and r["song_id"] not in fav_ids],
+            key=lambda r: (-r["skip_rate"], -(r["soft_skip_n"] + r["qs_n"]))
         )[:5]
         most_skipped = [
             {
@@ -519,12 +528,14 @@ async def api_songs_stats(user: dict = Depends(current_user)):
                 JOIN songs s ON s.song_id = p.song_id
                 WHERE p.inferred_skip IN ('skip', 'partial', 'full')
                   AND p.play_source IN ('smartshuffle_queued', 'random_baseline_queued')
+                  AND datetime(p.played_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             ),
             artist_qs AS (
                 SELECT s.artist_name, COUNT(*) AS qs_n
                 FROM queue_skips q
                 JOIN songs s ON s.song_id = q.song_id
+                WHERE datetime(q.inferred_at) >= datetime('now', '-30 days')
                 GROUP BY s.artist_name
             )
             SELECT
